@@ -17,6 +17,8 @@ static constexpr const char* kBridgeUrl =
 static constexpr uint32_t kBridgePollMs = 3000;
 static constexpr uint32_t kIdlePollMs = 10000;    // adaptive polling: quiet agent
 static constexpr uint32_t kActiveHoldMs = 60000;  // stay at kBridgePollMs this long after a change
+static constexpr uint32_t kFastPollMs = 600;      // egg request window
+static constexpr uint32_t kPollRetryMs = 2000;    // first retry after a failed poll
 static constexpr uint32_t kWifiReconnectMs = 10000;
 static constexpr uint32_t kWifiReportMs = 15000;
 static constexpr uint32_t kBatterySampleMs = 5000;
@@ -31,6 +33,11 @@ static constexpr uint32_t kButtonLongPressMs = 1500;
 static constexpr uint32_t kButtonVeryLongPressMs = 5000;
 static constexpr uint32_t kEggChordHoldMs = 2000;
 static constexpr uint32_t kFocusAutoReturnMs = 45000;
-static constexpr uint32_t kRenderIntervalMs = 100;
+// Round 3: content-driven redraws carry page updates; the periodic gate is a
+// 1 s fallback so the CPU can idle between sensor/battery/agent changes.
+static constexpr uint32_t kRenderIntervalMs = 1000;
+// Keep light sleep off for this long after boot so USB console/flashing stay
+// dependable (USB Serial/JTAG misbehaves under auto light sleep on IDF 4.4).
+static constexpr uint32_t kPmArmDelayMs = 45000;
 static constexpr uint32_t kSettingsSaveDelayMs = 2000;
 static constexpr int kChargeSensePin = -1;

@@ -14,6 +14,7 @@
 #include "models.h"
 #include "net_worker.h"
 #include "pet_state_machine.h"
+#include "pm_controller.h"
 #include "screen_renderer.h"
 
 namespace {
@@ -41,6 +42,9 @@ bool gRtcWrittenThisBoot = false;
 bool gSettingsDirty = false;
 uint32_t gSettingsChangedAt = 0;
 bool gForceRender = true;
+uint32_t gPmBootAtMs = 0;
+bool gPmArmed = false;
+int gPrevWifiConnected = -1;  // -1 unknown, 0/1 last seen connection state
 
 uint32_t gEggRequest = 0;       // counter sent to the bridge
 uint32_t gEggRequestedAt = 0;   // waiting for the bridge to answer
@@ -152,19 +156,36 @@ void readButtons(uint32_t now) {
 
 void sampleSensors(uint32_t now) {
   if (gLastClockSample == 0 || now - gLastClockSample >= kClockSampleMs) {
-    const int previousSecond = gEnvironment.second;
+    // Round 3: no page shows seconds any more, so redraw on minute changes
+    // and on the invalid->valid transition (SYNCING TIME -> real time).
+    const int prevMinute = gEnvironment.clockValid ? gEnvironment.hour * 60 + gEnvironment.minute : -1;
+    const bool prevValid = gEnvironment.clockValid;
     sampleClock(gEnvironment, gSettings.tz.c_str());
-    if (gEnvironment.second != previousSecond) {
+    if (gEnvironment.clockValid != prevValid ||
+        (gEnvironment.clockValid && gEnvironment.hour * 60 + gEnvironment.minute != prevMinute)) {
       gForceRender = true;
     }
     gLastClockSample = now;
   }
   if (gLastClimateSample == 0 || now - gLastClimateSample >= kClimateSampleMs) {
+    const float prevTemp = gEnvironment.temperatureC;
+    const float prevHum = gEnvironment.humidityPct;
+    const bool prevClimateValid = gEnvironment.climateValid;
     sampleClimate(gEnvironment);
+    if (gEnvironment.climateValid != prevClimateValid ||
+        (gEnvironment.climateValid &&
+         (gEnvironment.temperatureC != prevTemp || gEnvironment.humidityPct != prevHum))) {
+      gForceRender = true;
+    }
     gLastClimateSample = now;
   }
   if (gLastBatterySample == 0 || now - gLastBatterySample >= kBatterySampleMs) {
+    const PowerState prevPower = gPower;
     gPower = samplePowerState(false);
+    if (gPower.percent != prevPower.percent || gPower.lowBattery != prevPower.lowBattery ||
+        gPower.charging != prevPower.charging) {
+      gForceRender = true;
+    }
     gLastBatterySample = now;
   }
   // SNTP sets the system clock asynchronously; mirror it into the RTC now and then.
@@ -180,6 +201,11 @@ void sampleSensors(uint32_t now) {
 void applyBridge(uint32_t now) {
   if (!netWorkerSnapshot(gSnapshot)) {
     return;
+  }
+  const int wifiNow = gSnapshot.network.wifiConnected ? 1 : 0;
+  if (wifiNow != gPrevWifiConnected) {
+    gPrevWifiConnected = wifiNow;
+    gForceRender = true;
   }
   gNetwork = gSnapshot.network;
   if (gSnapshot.pollSeq == gLastPollSeen) {
@@ -270,6 +296,9 @@ void AppController::begin() {
   }
   pinMode(kBootButtonPin, INPUT_PULLUP);
   pinMode(kAgentFocusButtonPin, INPUT_PULLUP);
+  // pmBegin() runs once in main.cpp setup(); here we only arm the wake pads.
+  pmSetupButtonWakeup(kBootButtonPin, kAgentFocusButtonPin);
+  gPmBootAtMs = millis();
   Serial.printf("[BOOT] firmware=%s\n", kFirmwareVersion);
   Serial.printf("[BOOT] WiFi SSID=%s\n", kWifiSsid);
   Serial.printf("[BOOT] Bridge URL=%s\n", redactUrlToken(kBridgeUrl).c_str());
@@ -283,6 +312,17 @@ void AppController::begin() {
 
 void AppController::tick() {
   const uint32_t now = millis();
+
+  pmTick(now);
+  // Defer arming while the egg plays: it may cross the 45 s mark at 240 MHz
+  // with light sleep off, and re-arming mid-playback would throttle it. After
+  // the egg ends, pmEggPerformanceOff() restores 80 MHz first, then this gate
+  // arms light sleep on the next tick. gPmArmed mirrors the real outcome so a
+  // failed configure is retried instead of reported as success.
+  if (!gPmArmed && !eggActive() && now - gPmBootAtMs >= kPmArmDelayMs) {
+    pmEnableLightSleep();
+    gPmArmed = pmLightSleepArmed();
+  }
 
   readButtons(now);
   applyBridge(now);
@@ -301,10 +341,7 @@ void AppController::tick() {
   U8G2* panel = gRenderer.u8g2();
   if (eggActive() && panel) {
     if (!gEggWasActive) {
-      // Egg playback streams over Wi-Fi and decodes 20 fps: run it at full
-      // clock, then drop back to the power-saving 80 MHz set in setup().
-      setCpuFrequencyMhz(240);
-      Serial.println("[PWR] cpu=240MHz (egg)");
+      pmEggPerformanceOn();
     }
     eggTick(*panel, now);
     gEggWasActive = true;
@@ -313,8 +350,7 @@ void AppController::tick() {
   }
   if (gEggWasActive) {
     gEggWasActive = false;
-    setCpuFrequencyMhz(80);
-    Serial.println("[PWR] cpu=80MHz");
+    pmEggPerformanceOff();
     gRenderer.invalidate();
     gForceRender = true;
   }

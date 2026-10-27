@@ -12,10 +12,10 @@
 
 #include "anim_codec.h"
 #include "app_config.h"
+#include "poll_policy.h"
 
 namespace {
 
-constexpr uint32_t kFastPollIntervalMs = 600;
 constexpr uint16_t kPollTimeoutMs = 2500;
 constexpr uint16_t kChunkTimeoutMs = 4000;
 constexpr uint32_t kMaxFramesPerChunk = 240;
@@ -39,6 +39,7 @@ DeviceTelemetry gTelemetry;
 bool gFastPoll = false;
 bool gRunning = false;
 uint32_t gLastAgentChangeMs = 0;  // millis() of the last agent change (0 = no baseline yet)
+uint32_t gFailStreak = 0;         // consecutive failed polls (fast retry, then backoff)
 
 bool gStreamActive = false;
 bool gStreamFailed = false;
@@ -89,6 +90,7 @@ void pollOnce() {
     Guard guard;
     gSnapshot.pollSeq += 1;
     gSnapshot.lastPollOk = ok;
+    gFailStreak = ok ? 0 : gFailStreak + 1;
     if (ok) {
       const bool firstSuccess = gSnapshot.lastPollOkAtMs == 0;
       const AgentState& prev = gSnapshot.agent;
@@ -308,6 +310,7 @@ void netTask(void*) {
     bool fastPoll = false;
     bool busy = false;
     uint32_t lastAgentChange = 0;
+    uint32_t failStreak = 0;
     {
       Guard guard;
       gSnapshot.network = network;
@@ -319,6 +322,7 @@ void netTask(void*) {
       busy = gSnapshot.agent.status == AgentStatus::Running ||
              gSnapshot.agent.status == AgentStatus::NeedsAttention;
       lastAgentChange = gLastAgentChangeMs;
+      failStreak = gFailStreak;
     }
 
     // Modem sleep adds ~100 ms latency per request; turn it off while streaming.
@@ -327,11 +331,8 @@ void netTask(void*) {
       sleepDisabled = streaming;
     }
 
-    uint32_t interval = kFastPollIntervalMs;
-    if (!fastPoll) {
-      interval = (busy || lastAgentChange == 0 || now - lastAgentChange < kActiveHoldMs) ? kBridgePollMs
-                                                                                         : kIdlePollMs;
-    }
+    const uint32_t interval = pollIntervalMs(fastPoll, busy, lastAgentChange != 0,
+                                             now - lastAgentChange, failStreak);
     if (connected && millis() - lastPoll >= interval) {
       pollOnce();
       lastPoll = millis();

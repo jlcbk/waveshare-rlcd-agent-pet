@@ -1,0 +1,30 @@
+diff --git a/components/esp_hw_support/sleep_modes.c b/components/esp_hw_support/sleep_modes.c
+index 25e1411..adfbbed 100644
+--- a/components/esp_hw_support/sleep_modes.c
++++ b/components/esp_hw_support/sleep_modes.c
+@@ -178,6 +178,15 @@ static sleep_config_t s_config = {
+    expected when determining wakeup cause. */
+ static bool s_light_sleep_wakeup = false;
+ 
++// RLCD round-3 power evidence: count completed light sleeps. The counter
++// lives in RTC memory and survives resets (not power cycles). Incremented
++// only after a light sleep completed successfully.
++RTC_DATA_ATTR uint32_t g_rtc_light_sleep_count = 0;
++
++uint32_t esp_sleep_get_light_sleep_count(void) {
++    return g_rtc_light_sleep_count;
++}
++
+ /* Updating RTC_MEMORY_CRC_REG register via set_rtc_memory_crc()
+    is not thread-safe, so we need to disable interrupts before going to deep sleep. */
+ static portMUX_TYPE spinlock_rtc_deep_sleep = portMUX_INITIALIZER_UNLOCKED;
+@@ -856,6 +865,9 @@ esp_err_t esp_light_sleep_start(void)
+ 
+     // light sleep wakeup flag only makes sense after a successful light sleep
+     s_light_sleep_wakeup = (err == ESP_OK);
++    if (err == ESP_OK) {
++        g_rtc_light_sleep_count += 1;
++    }
+ 
+     // FRC1 has been clock gated for the duration of the sleep, correct for that.
+ #ifdef CONFIG_IDF_TARGET_ESP32C3

@@ -1,0 +1,57 @@
+diff --git a/tools/update-components.sh b/tools/update-components.sh
+index bd0e394..19f6d11 100755
+--- a/tools/update-components.sh
++++ b/tools/update-components.sh
+@@ -46,9 +46,10 @@ if [ -z $AR_BRANCH ]; then
+ fi
+ 
+ if [ "$AR_BRANCH" ]; then
+-	git -C "$AR_COMPS/arduino" checkout "$AR_BRANCH" && \
+-	git -C "$AR_COMPS/arduino" fetch && \
+-	git -C "$AR_COMPS/arduino" pull --ff-only
++	# round3: pinned to the official 2.0.17 SDK commit (versions.txt:
++	# arduino idf-38eeba213a d75795f5); do not track the branch tip.
++	git -C "$AR_COMPS/arduino" fetch --depth 1 origin d75795f5e27eac7afea33b27a22d826cb4556c99 && \
++	git -C "$AR_COMPS/arduino" checkout -q FETCH_HEAD
+ fi
+ if [ $? -ne 0 ]; then exit 1; fi
+ 
+@@ -59,8 +60,10 @@ echo "Updating ESP32 Camera..."
+ if [ ! -d "$AR_COMPS/esp32-camera" ]; then
+ 	git clone $CAMERA_REPO_URL "$AR_COMPS/esp32-camera"
+ else
+-	git -C "$AR_COMPS/esp32-camera" fetch && \
+-	git -C "$AR_COMPS/esp32-camera" pull --ff-only
++	# round3: pinned to the commit recorded in the official 2.0.17 SDK
++	# versions.txt (tools/sdk/versions.txt); do not drift to master.
++	git -C "$AR_COMPS/esp32-camera" fetch --depth 1 origin f0bb42917cddcfba2c32c2e2fb2875b4fea11b7a && \
++	git -C "$AR_COMPS/esp32-camera" checkout -q FETCH_HEAD
+ fi
+ if [ $? -ne 0 ]; then exit 1; fi
+ 
+@@ -82,8 +85,10 @@ if [ ! -d "$AR_COMPS/esp_littlefs" ]; then
+ 	git clone $LITTLEFS_REPO_URL "$AR_COMPS/esp_littlefs" && \
+     git -C "$AR_COMPS/esp_littlefs" submodule update --init --recursive
+ else
+-	git -C "$AR_COMPS/esp_littlefs" fetch && \
+-	git -C "$AR_COMPS/esp_littlefs" pull --ff-only && \
++	# round3: pinned to the commit recorded in the official 2.0.17 SDK
++	# versions.txt; do not drift to master.
++	git -C "$AR_COMPS/esp_littlefs" fetch --depth 1 origin 41873c20fb5cdbcf28d7d6cc04e4bcb4a1305317 && \
++	git -C "$AR_COMPS/esp_littlefs" checkout -q FETCH_HEAD && \
+     git -C "$AR_COMPS/esp_littlefs" submodule update --init --recursive
+ fi
+ if [ $? -ne 0 ]; then exit 1; fi
+@@ -118,8 +123,10 @@ echo "Updating TinyUSB..."
+ if [ ! -d "$AR_COMPS/arduino_tinyusb/tinyusb" ]; then
+ 	git clone $TINYUSB_REPO_URL "$AR_COMPS/arduino_tinyusb/tinyusb"
+ else
+-	git -C "$AR_COMPS/arduino_tinyusb/tinyusb" fetch && \
+-	git -C "$AR_COMPS/arduino_tinyusb/tinyusb" pull --ff-only
++	# round3: pinned to the commit recorded in the official 2.0.17 SDK
++	# versions.txt; detached HEAD must not be pulled forward.
++	git -C "$AR_COMPS/arduino_tinyusb/tinyusb" fetch --depth 1 origin a0e5626bc50d484a23f33000c48082179f0cc2dd && \
++	git -C "$AR_COMPS/arduino_tinyusb/tinyusb" checkout -q FETCH_HEAD
+ fi
+ if [ $? -ne 0 ]; then exit 1; fi
+ 

@@ -1,6 +1,7 @@
 #include <Arduino.h>
 
 #include "app_controller.h"
+#include "pm_controller.h"
 
 namespace {
 
@@ -11,13 +12,9 @@ AppController gApp;
 void setup() {
   Serial.begin(115200);
   delay(250);
-  // Idle display duty: 80 MHz is Wi-Fi's minimum and plenty for rendering;
-  // egg playback temporarily boosts to 240 MHz (app_controller.cpp).
-  if (setCpuFrequencyMhz(80)) {
-    Serial.println("[PWR] cpu=80MHz");
-  } else {
-    Serial.println("[PWR] cpu=80MHz FAILED");
-  }
+  // Power policy owner: esp_pm (80 MHz + auto light sleep after the boot
+  // window) when the SDK supports it, otherwise the fixed 80 MHz fallback.
+  pmBegin();
   gApp.begin();
 }
 
