@@ -15,6 +15,8 @@ static constexpr const char* kBridgeUrl =
 #endif
 
 static constexpr uint32_t kBridgePollMs = 3000;
+static constexpr uint32_t kIdlePollMs = 10000;    // adaptive polling: quiet agent
+static constexpr uint32_t kActiveHoldMs = 60000;  // stay at kBridgePollMs this long after a change
 static constexpr uint32_t kWifiReconnectMs = 10000;
 static constexpr uint32_t kWifiReportMs = 15000;
 static constexpr uint32_t kBatterySampleMs = 5000;

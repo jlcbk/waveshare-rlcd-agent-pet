@@ -300,6 +300,12 @@ void AppController::tick() {
 
   U8G2* panel = gRenderer.u8g2();
   if (eggActive() && panel) {
+    if (!gEggWasActive) {
+      // Egg playback streams over Wi-Fi and decodes 20 fps: run it at full
+      // clock, then drop back to the power-saving 80 MHz set in setup().
+      setCpuFrequencyMhz(240);
+      Serial.println("[PWR] cpu=240MHz (egg)");
+    }
     eggTick(*panel, now);
     gEggWasActive = true;
     delay(2);
@@ -307,6 +313,8 @@ void AppController::tick() {
   }
   if (gEggWasActive) {
     gEggWasActive = false;
+    setCpuFrequencyMhz(80);
+    Serial.println("[PWR] cpu=80MHz");
     gRenderer.invalidate();
     gForceRender = true;
   }

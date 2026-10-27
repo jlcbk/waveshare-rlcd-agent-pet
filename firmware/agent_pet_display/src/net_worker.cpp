@@ -38,6 +38,7 @@ FocusRequestState gFocus;
 DeviceTelemetry gTelemetry;
 bool gFastPoll = false;
 bool gRunning = false;
+uint32_t gLastAgentChangeMs = 0;  // millis() of the last agent change (0 = no baseline yet)
 
 bool gStreamActive = false;
 bool gStreamFailed = false;
@@ -89,6 +90,13 @@ void pollOnce() {
     gSnapshot.pollSeq += 1;
     gSnapshot.lastPollOk = ok;
     if (ok) {
+      const bool firstSuccess = gSnapshot.lastPollOkAtMs == 0;
+      const AgentState& prev = gSnapshot.agent;
+      if (firstSuccess || prev.status != agent.status || prev.statusDetail != agent.statusDetail ||
+          prev.task != agent.task || prev.usageToday != agent.usageToday ||
+          prev.usageContext != agent.usageContext || prev.usageQuota != agent.usageQuota) {
+        gLastAgentChangeMs = doneAt;
+      }
       gSnapshot.agent = agent;
       gSnapshot.commands = commands;
       gSnapshot.lastPollOkAtMs = doneAt;
@@ -251,6 +259,10 @@ void netTask(void*) {
     if (status != lastStatus) {
       if (connected) {
         Serial.printf("[WIFI] connected ip=%s rssi=%d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+        {
+          Guard guard;
+          gLastAgentChangeMs = now;  // resync quickly after (re)connect
+        }
         reconnectAttempts = 0;
       } else {
         Serial.printf("[WIFI] status=%d\n", static_cast<int>(status));
@@ -294,6 +306,8 @@ void netTask(void*) {
 
     bool streaming = false;
     bool fastPoll = false;
+    bool busy = false;
+    uint32_t lastAgentChange = 0;
     {
       Guard guard;
       gSnapshot.network = network;
@@ -302,6 +316,9 @@ void netTask(void*) {
       }
       streaming = gStreamActive && !gStreamFailed;
       fastPoll = gFastPoll;
+      busy = gSnapshot.agent.status == AgentStatus::Running ||
+             gSnapshot.agent.status == AgentStatus::NeedsAttention;
+      lastAgentChange = gLastAgentChangeMs;
     }
 
     // Modem sleep adds ~100 ms latency per request; turn it off while streaming.
@@ -310,7 +327,11 @@ void netTask(void*) {
       sleepDisabled = streaming;
     }
 
-    const uint32_t interval = fastPoll ? kFastPollIntervalMs : kBridgePollMs;
+    uint32_t interval = kFastPollIntervalMs;
+    if (!fastPoll) {
+      interval = (busy || lastAgentChange == 0 || now - lastAgentChange < kActiveHoldMs) ? kBridgePollMs
+                                                                                         : kIdlePollMs;
+    }
     if (connected && millis() - lastPoll >= interval) {
       pollOnce();
       lastPoll = millis();
@@ -354,7 +375,14 @@ void netWorkerSetFocus(const FocusRequestState& focus) {
     return;
   }
   Guard guard;
+  // The app calls this after every poll to mirror its focus state; only a real
+  // selection change (not the periodic no-op sync) should restart active mode.
+  const bool changed = gFocus.mode != focus.mode || gFocus.focusId != focus.focusId ||
+                       gFocus.visibleIndex != focus.visibleIndex;
   gFocus = focus;
+  if (changed) {
+    gLastAgentChangeMs = millis();  // poll with the new focus promptly
+  }
 }
 
 void netWorkerSetTelemetry(const DeviceTelemetry& telemetry) {
