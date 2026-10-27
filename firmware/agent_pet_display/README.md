@@ -2,6 +2,10 @@
 
 PlatformIO Arduino firmware for the Waveshare ESP32-S3-RLCD-4.2.
 
+The measured low-power build uses a separately rebuilt PM-enabled SDK. The
+ordinary `waveshare_rlcd` build below uses the stock SDK and does not enable the
+same automatic light sleep. See [PM SDK notes](tools/pm-libs/README.md).
+
 ## Before flashing
 
 1. Create `include/secrets.h` (git ignores it): `tools/make-secrets.sh` asks for the Wi-Fi name and password and builds the bridge URL from the Mac's LAN address and the bridge token; `tools/import-legacy-secrets.sh <old include/app_config.h>` reuses an older checkout's values; or copy `include/secrets.example.h` and fill it in
@@ -25,7 +29,7 @@ images with the real drawing code (see the top-level README).
 ## What runs where
 
 - The main loop reads buttons and sensors, drives the pet state machine and redraws only when a frame changes.
-- A FreeRTOS task on core 0 (`net_worker`) owns Wi-Fi, the bridge poll and easter-egg streaming, so a slow network never freezes the screen or the seconds.
+- A FreeRTOS task on core 0 (`net_worker`) owns Wi-Fi, the bridge poll and easter-egg streaming, so a slow network does not block the screen's main loop.
 - Time: the RTC holds UTC; the POSIX time zone comes from the bridge and is stored in NVS with the clock settings. A board that still has China-time RTC data from firmware before 1.3.0 is migrated once.
 - Easter egg: RLA1 frames are fetched in 16 KB chunks into three buffers and shown on a schedule shared with the bridge; if the stream stalls or the bridge has no animation, the built-in animation plays.
 

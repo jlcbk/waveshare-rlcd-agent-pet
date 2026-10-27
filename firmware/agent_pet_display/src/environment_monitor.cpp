@@ -16,6 +16,7 @@ constexpr int kEnvI2cSclPin = 14;
 constexpr int kEnvI2cSdaPin = 13;
 constexpr uint8_t kShtc3Address = 0x70;
 constexpr uint16_t kShtc3WakeupCommand = 0x3517;
+constexpr uint16_t kShtc3SleepCommand = 0xB098;
 constexpr uint16_t kShtc3SoftResetCommand = 0x805D;
 constexpr uint16_t kShtc3MeasurePollingCommand = 0x7866;
 constexpr float kShtc3TemperatureOffsetC = 4.0f;
@@ -92,6 +93,7 @@ void beginEnvironmentMonitor() {
   delay(2);
   writeShtc3Command(kShtc3SoftResetCommand);
   delay(20);
+  writeShtc3Command(kShtc3SleepCommand);
   gEnvironmentReady = true;
 }
 
@@ -139,7 +141,9 @@ void sampleClimate(EnvironmentState& state) {
   delay(20);
 
   uint8_t bytes[6] = {0};
-  if (!readShtc3Bytes(bytes, sizeof(bytes))) {
+  const bool readOk = readShtc3Bytes(bytes, sizeof(bytes));
+  writeShtc3Command(kShtc3SleepCommand);
+  if (!readOk) {
     return;
   }
   if (shtc3Crc(bytes, 2) != bytes[2] || shtc3Crc(bytes + 3, 2) != bytes[5]) {

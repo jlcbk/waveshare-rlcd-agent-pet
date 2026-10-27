@@ -5,6 +5,7 @@
 #include <Arduino.h>
 #include <HTTPClient.h>
 #include <WiFi.h>
+#include <esp_wifi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
@@ -18,6 +19,7 @@ namespace {
 
 constexpr uint16_t kPollTimeoutMs = 2500;
 constexpr uint16_t kChunkTimeoutMs = 4000;
+constexpr uint16_t kWifiListenInterval = 5;
 constexpr uint32_t kMaxFramesPerChunk = 240;
 constexpr int kMaxChunkFailures = 4;
 
@@ -244,6 +246,36 @@ void fillStream() {
   gChunkFailures = 0;
 }
 
+void setWifiPowerSave(wifi_ps_type_t wanted) {
+  WiFi.setSleep(wanted);
+  wifi_ps_type_t actual = WIFI_PS_NONE;
+  esp_err_t err = esp_wifi_get_ps(&actual);
+  if (err == ESP_OK && actual != wanted) {
+    err = esp_wifi_set_ps(wanted);
+  }
+  if (err != ESP_OK) {
+    Serial.printf("[WIFI] power-save setup failed: 0x%x\n", err);
+  }
+}
+
+void beginWifi() {
+  // With connect=false, begin() returns the previous status, not the setup result.
+  WiFi.begin(gSsid.c_str(), gPassword.c_str(), 0, nullptr, false);
+  wifi_config_t config = {};
+  esp_err_t err = esp_wifi_get_config(WIFI_IF_STA, &config);
+  if (err == ESP_OK) {
+    config.sta.listen_interval = kWifiListenInterval;
+    err = esp_wifi_set_config(WIFI_IF_STA, &config);
+  }
+  if (err != ESP_OK) {
+    Serial.printf("[WIFI] listen interval setup failed: 0x%x\n", err);
+  }
+  err = esp_wifi_connect();
+  if (err != ESP_OK) {
+    Serial.printf("[WIFI] connection start failed: 0x%x\n", err);
+  }
+}
+
 void netTask(void*) {
   uint32_t lastReconnect = millis();
   uint32_t lastReport = 0;
@@ -276,7 +308,7 @@ void netTask(void*) {
       Serial.printf("[WIFI] reconnect attempt=%lu status=%d\n", static_cast<unsigned long>(reconnectAttempts),
                     static_cast<int>(status));
       WiFi.disconnect(false);
-      WiFi.begin(gSsid.c_str(), gPassword.c_str());
+      beginWifi();
       lastReconnect = now;
     }
     if (connected && !sntpStarted) {
@@ -325,9 +357,9 @@ void netTask(void*) {
       failStreak = gFailStreak;
     }
 
-    // Modem sleep adds ~100 ms latency per request; turn it off while streaming.
+    // Streaming needs low latency; restore maximum modem sleep afterwards.
     if (streaming != sleepDisabled) {
-      WiFi.setSleep(!streaming);
+      setWifiPowerSave(streaming ? WIFI_PS_NONE : WIFI_PS_MAX_MODEM);
       sleepDisabled = streaming;
     }
 
@@ -359,7 +391,8 @@ void netWorkerBegin(const char* ssid, const char* password, const char* pollUrl)
   WiFi.mode(WIFI_STA);
   WiFi.persistent(false);
   WiFi.setAutoReconnect(true);
-  WiFi.begin(gSsid.c_str(), gPassword.c_str());
+  setWifiPowerSave(WIFI_PS_MAX_MODEM);
+  beginWifi();
   gRunning = true;
   xTaskCreatePinnedToCore(netTask, "net", 12288, nullptr, 1, nullptr, 0);
 }

@@ -19,34 +19,63 @@ therefore requires rebuilding the SDK libs from source.
    `uint32_t esp_sleep_get_light_sleep_count(void)`. The firmware references
    it as a weak symbol, so the same firmware also links against the stock SDK
    (reporting "n/a").
-3. `lib-builder-pin-components.patch`: pins esp32-camera, esp_littlefs and
-   tinyusb to the commits recorded in the stock package
-   `tools/sdk/versions.txt` (the official 2.0.17 build), so the lib-builder's
-   update-components.sh cannot drift them to master (newer manifests require
-   IDF >= 5.0).
+3. `lib-builder-pin-components.patch` records the Arduino, esp32-camera,
+   esp_littlefs and tinyusb revisions used by the local build. Its component
+   update branches assume those repositories already exist: on a fresh clone,
+   check the resulting component revisions explicitly before building.
 
-## Reproducing
+## SDK rebuild notes
 
+The measured board used `esp32-arduino-lib-builder` commit
+`3eb9cb06afb534d37f47e98bca9f45e99126f81a` and ESP-IDF v4.4.7 commit
+`38eeba213aa695aabfd6d89aa9f5078dbe5a94c3`. The rebuilt SDK and its full
+builder checkout are **not** in this repository. A clean-machine rebuild has
+not been independently verified; these are notes, not a one-command recipe.
+
+In a separate lib-builder checkout, apply `lib-builder-pin-components.patch`
+there and `idf-v4.4.7-light-sleep-count.patch` inside its ESP-IDF checkout.
+Add `CONFIG_PM_ENABLE=y` and `CONFIG_FREERTOS_USE_TICKLESS_IDLE=y` to
+`configs/defconfig.esp32s3`, ensure the relevant components are at the commits
+listed in the patch, then run `./build.sh -t esp32s3 -b idf_libs qio 80m qio_ram`
+from the builder directory. The builder installs or updates dependencies and
+replaces its own `build` and `sdkconfig` files; keep it separate from other work.
+See the builder's prerequisites; on macOS it requires `gsed` and `gawk`.
+
+The resulting `out/tools/sdk/esp32s3/` contains `lib`, `include`, `ld`,
+`qio_qspi` and `sdkconfig`.
+
+## Using a prepared PM framework with PlatformIO
+
+First make a separate copy of the stock PlatformIO `framework-arduinoespressif32`
+2.0.17 package and overlay the rebuilt `out/tools/sdk/esp32s3/` onto the copy's
+`tools/sdk/esp32s3/`. Do not overwrite the global package. With all ordinary
+PlatformIO packages already installed, use an isolated package directory:
+
+```bash
+cd firmware/agent_pet_display
+export RLCD_PM_FRAMEWORK_DIR="/absolute/path/to/the/separate/pm-framework"
+export RLCD_PIO_PACKAGES="$(mktemp -d "${TMPDIR:-/tmp}/rlcd-pio-packages.XXXXXX")"
+
+for package in "$HOME"/.platformio/packages/*; do
+  [ -d "$package" ] || continue
+  name="$(basename "$package")"
+  if [ "$name" = framework-arduinoespressif32 ]; then
+    ln -s "$RLCD_PM_FRAMEWORK_DIR" "$RLCD_PIO_PACKAGES/$name"
+  else
+    ln -s "$package" "$RLCD_PIO_PACKAGES/$name"
+  fi
+done
+
+PLATFORMIO_PACKAGES_DIR="$RLCD_PIO_PACKAGES" pio run -e waveshare_rlcd_pm
 ```
-git clone --depth 1 -b release/v4.4 https://github.com/espressif/esp32-arduino-lib-builder.git
-git clone --depth 1 -b v4.4.7 --recurse-submodules --shallow-submodules \
-    https://github.com/espressif/esp-idf.git esp32-arduino-lib-builder/esp-idf
-# pin the three loose components (see lib-builder-pin-components.patch), then:
-#   apply idf-v4.4.7-light-sleep-count.patch inside esp-idf
-#   append the two CONFIG_ lines to configs/defconfig.esp32s3
-# (macOS needs gsed/gawk available; shims that forward to BSD sed/awk suffice)
-./build.sh -t esp32s3 -b idf_libs qio 80m qio_ram
-```
 
-The result lands in `out/tools/sdk/esp32s3/{lib,include,ld}`.
-
-## Using it with PlatformIO
-
-Copy the stock `framework-arduinoespressif32` package (APFS `cp -c`, near-zero
-extra space), replace `tools/sdk/esp32s3` with the rebuilt one, and point the
-`waveshare_rlcd_pm*` environments at the copy via `platform_packages` (see
-platformio.ini). The stock `waveshare_rlcd` environment is unchanged so the
-baseline build and rollback stay on official binaries.
+Keep `RLCD_PIO_PACKAGES` in the same shell when using the top-level upload
+command. The isolated directory links other tool packages to the existing
+PlatformIO installation; it does not contain a copy of the custom SDK. Without
+the PM SDK, the firmware can still compile but falls back to a fixed CPU clock
+without automatic light sleep. The older `use-pm-sdk.sh` is a machine-specific
+global swap script; do not run it on another machine or use it as a general
+installation method.
 
 ## Verification of the rebuilt libs
 
@@ -56,3 +85,6 @@ baseline build and rollback stay on official binaries.
   `libesp_pm.a` link set) shows `esp_sleep_get_light_sleep_count`.
 - The effective `sdkconfig` in the lib-builder build dir shows both CONFIG
   lines set.
+- This proves what was linked or configured, not the board's actual sleep time
+  or average current. The cycle-based duty percentage is inaccurate when CPU
+  frequency changes.

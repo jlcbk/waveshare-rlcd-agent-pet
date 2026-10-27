@@ -4,6 +4,23 @@
 
 一块放在桌上的反射式屏幕（Waveshare `ESP32-S3-RLCD-4.2`），用来显示你的编程智能体在做什么：Codex、Claude Code、Hermes、OpenClaw。它同时是一块时钟，显示电量和室内温湿度，还藏了一个能播放 1-bit 视频的彩蛋。Mac 上有一个小小的 bridge 负责收集状态，另有网页控制台和菜单栏 App 用来查看和控制。
 
+这是基于 [xyuuii/waveshare-rlcd-agent-pet](https://github.com/xyuuii/waveshare-rlcd-agent-pet) 的个人 fork。我们希望它在屏幕常亮、Wi-Fi 保持连接的情况下，文字更易读，同时尽量降低耗电；原项目的 bridge 和交互能力仍是这个版本的基础。
+
+## 这个版本做了什么
+
+- 重新调整概览、用量和时钟三个页面，使用多种预先准备的点阵字号，包括由 Inter 生成的字形，让英文信息更易读。
+- 常态页面取消秒显示，宠物保持静态；需要时仍可主动播放彩蛋。
+- 通过单独重编的 Arduino-ESP32 2.0.17 / ESP-IDF 4.4.7 SDK 启用自动轻睡眠和动态调频。Wi-Fi 保持连接，非动画传输时使用更强的无线省电模式。
+- bridge 在活跃时约 3 秒、安静时约 10 秒轮询一次；相同画面不重复发送到屏幕；SHTC3 采样后休眠，约 30 秒采样一次。
+
+### 一次实机电流观察
+
+断开电池，用独立 USB 充电器或充电宝供电，在一块板子上通过数字 USB 电流表观察：当前版本多数时候显示 **15–18 mA**，偶尔显示 **30–40 mA**；上一版本多数时候为 **20–23 mA**。
+
+这些是电流表的显示读数，不是仪器记录的长期平均值或真实峰值。路由器、Wi-Fi 信号、工作状态、供电和电流表都会影响结果；USB 输入电流也不能直接当作电池电流推算续航。启动后前 45 秒保留调试窗口，之后才尝试自动轻睡眠。
+
+**构建须知：**上述低功耗版本依赖单独重编的 PM SDK，该 SDK 二进制没有放进仓库。普通 `waveshare_rlcd` 环境可使用官方 SDK 编译，但不会获得相同的自动轻睡眠效果。复现前请先看 [PM SDK 说明](firmware/agent_pet_display/tools/pm-libs/README.md)。
+
 <table>
   <tr>
     <td><img src="bridge/codex-pet-bridge/ui/previews/page-overview.png" width="260" alt="概览页"></td>
@@ -17,11 +34,11 @@
   </tr>
 </table>
 
-本页的屏幕图都由固件自己的绘图代码渲染（见[不接硬件也能看效果](#不接硬件也能看效果)）。像素和实物一致，但反射屏在房间里的观感会不同。
+本页的屏幕图是用固件绘图代码生成的电脑预览（见[不接硬件也能看效果](#不接硬件也能看效果)），部分图片可能早于最近一次布局调整；反射屏的实际观感也会不同。
 
 ## 板子上显示什么
 
-- **概览**：哪个智能体在活动、在做什么（思考、调用工具、搜索、等你处理、完成），任务名。一只心情跟着智能体变化的像素宠物，外加时间、电量、温湿度、Wi-Fi 和 bridge 状态。
+- **概览**：哪个智能体在活动、在做什么（思考、调用工具、搜索、等你处理、完成），任务名、静态像素宠物，以及时间、电量、温湿度、Wi-Fi 和 bridge 状态。
 - **用量**：Codex 的今日 token、上下文窗口、5 小时和每周额度；Claude Code 的今日 token、上下文和模型。
 - **时钟**：七种表盘的全屏时钟，附带日期、室内温湿度和智能体状态。时间来自板载 RTC（按 UTC 保存），时区和夏令时规则跟随 Mac。
 
@@ -79,19 +96,19 @@ flowchart LR
     B --- UI["控制台 /ui"]
     B --- PB["PetBar 菜单栏 App"]
   end
-  Board["ESP32-S3 RLCD 板子"] -- "每 3 秒 GET /esp32/poll，附带遥测" --> B
+  Board["ESP32-S3 RLCD 板子"] -- "GET /esp32/poll：活跃 3 秒 / 空闲 10 秒" --> B
   B -- "智能体状态、表盘设置、时区、彩蛋" --> Board
   Board -- "GET /esp32/anim/:id/frames" --> B
 ```
 
-板子带着令牌轮询 bridge，每次都附上电量、温湿度、Wi-Fi 信号、当前页面和固件版本。bridge 的回复里除了智能体状态，还有表盘设置、时区和彩蛋指令。板子上的网络请求全部在第二个核心的 FreeRTOS 任务里完成，网络再慢也不会卡住屏幕和秒针。
+板子带着令牌轮询 bridge，每次都附上电量、温湿度、Wi-Fi 信号、当前页面和固件版本。bridge 的回复里除了智能体状态，还有表盘设置、时区和彩蛋指令。网络请求由第二个核心的 FreeRTOS 任务处理，避免慢网络阻塞屏幕主循环。
 
 ## 快速开始（Mac）
 
-想让智能体代为安装，把 [docs/AGENT_INSTALL.md](docs/AGENT_INSTALL.md) 交给它即可，里面有检查步骤、需要征求同意的操作和排错方法。手动安装：
+想让智能体代为安装，可参考 [docs/AGENT_INSTALL.md](docs/AGENT_INSTALL.md)；它介绍的是基础项目，低功耗 SDK 还需额外准备。手动安装：
 
 ```bash
-git clone https://github.com/xyuuii/waveshare-rlcd-agent-pet.git
+git clone https://github.com/jlcbk/waveshare-rlcd-agent-pet.git
 cd waveshare-rlcd-agent-pet
 
 # 1. 以开机启动项安装 bridge：第一次只显示计划，加 --apply 才执行
@@ -103,9 +120,10 @@ bridge/codex-pet-bridge/tools/mac/install.sh --apply
 cd firmware/agent_pet_display
 tools/make-secrets.sh
 
-# 3. 测试、编译、烧录（端口用 pio device list 找 VID:PID 303A:1001）
-pio test -e native
-pio run -e waveshare_rlcd -t upload --upload-port /dev/cu.usbmodem101
+# 3. 先在当前终端按 tools/pm-libs/README.md 准备 PM SDK 和 RLCD_PIO_PACKAGES。
+#    用 pio device list 找到 VID:PID 303A:1001 的实际端口并替换下面的示例。
+: "${RLCD_PIO_PACKAGES:?请先准备隔离的 PM 工具包}"
+PLATFORMIO_PACKAGES_DIR="$RLCD_PIO_PACKAGES" pio run -e waveshare_rlcd_pm -t upload --upload-port /dev/cu.usbmodem101
 
 # 4. 菜单栏 App
 ../../bridge/codex-pet-bridge/macos/PetBar/build.sh --install
@@ -126,7 +144,7 @@ bridge 在任何装有 Node 20 的机器上都能跑：`node bridge/codex-pet-br
 | BOOT | 按住 5 秒 | 彩蛋 | 彩蛋 |
 | 任意键 | 彩蛋播放中 | 停止 | 停止 |
 
-表盘、12/24 小时制和秒也可以在控制台或 PetBar 里设置，重启后保留。
+表盘和 12/24 小时制可以在控制台或 PetBar 里设置，重启后保留。本 fork 的常态时钟页面不显示秒。
 
 ## 目录结构
 
@@ -145,7 +163,7 @@ bridge 在任何装有 Node 20 的机器上都能跑：`node bridge/codex-pet-br
 
 | 检查 | 命令 |
 | --- | --- |
-| 固件单元测试（108 个） | `cd firmware/agent_pet_display && pio test -e native` |
+| 固件单元测试 | `cd firmware/agent_pet_display && pio test -e native` |
 | 固件编译 | `pio run -e waveshare_rlcd` |
 | bridge 测试 | `cd bridge/codex-pet-bridge && node --test` |
 | bridge ⇄ 固件协议 | `tools/contract-test.sh` |
@@ -182,5 +200,6 @@ bridge 在任何装有 Node 20 的机器上都能跑：`node bridge/codex-pet-br
 - RLCD 板级支持和接线改编自 Waveshare 示例
 - GUGUGAGA 宠物形象由 [`drlrf/cc-guga`](https://github.com/drlrf/cc-guga) 以 MIT 许可发布的 `pets/gugugaga` 转换为单色 RLCD 位图
 - Doto 字体按 SIL Open Font License 使用（见 `firmware/agent_pet_display/THIRD_PARTY_NOTICES.md`）
+- Inter 衍生点阵字形按 SIL Open Font License 使用（见同一份许可说明）
 
 各目录中保留了对应的许可文件。

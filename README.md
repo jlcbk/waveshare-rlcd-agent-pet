@@ -8,6 +8,38 @@ also a clock, shows the board's battery and room climate, and can play 1-bit
 videos as an easter egg. On the Mac, a small bridge collects agent status, and
 a web dashboard and a menu bar app let you check and control everything.
 
+This is a personal fork of [xyuuii/waveshare-rlcd-agent-pet](https://github.com/xyuuii/waveshare-rlcd-agent-pet),
+focused on clearer text and lower power while keeping the screen and Wi-Fi on.
+The original project, bridge and interactive features remain the foundation.
+
+## What's different in this fork
+
+- Redesigned overview, usage and clock pages with clearer English text, using
+  several prepared bitmap font sizes, including glyphs derived from Inter.
+- Minute-level clocks and a static pet on the normal overview avoid continuous
+  animation; the on-demand easter egg remains available.
+- Automatic light sleep and dynamic CPU frequency scaling, enabled by a
+  separately rebuilt Arduino-ESP32 2.0.17 / ESP-IDF 4.4.7 SDK. Wi-Fi stays
+  connected, using maximum modem power save outside animation streaming.
+- Adaptive bridge polling (about 3 seconds when active, 10 seconds when quiet),
+  skipped unchanged display transfers, and SHTC3 sleep between 30-second samples.
+
+### Observed USB current
+
+On one board, with the battery disconnected and an independent USB charger or
+power bank, a numeric USB meter usually showed **15–18 mA** on this version,
+with occasional readings in the **30–40 mA** range. The preceding version was
+usually **20–23 mA**. These are displayed readings, not a logged average or
+true peak; Wi-Fi, the access point, workload, supply and meter can change the
+result. USB input current cannot be used directly as battery current or runtime.
+After boot, light sleep is held off for the first 45 seconds.
+
+**Build note:** the tested low-power configuration requires a custom PM-enabled
+SDK that is not checked into this repository. The normal `waveshare_rlcd`
+environment can build using the stock SDK but does not provide the same auto
+light sleep. See [PM SDK notes](firmware/agent_pet_display/tools/pm-libs/README.md)
+before trying to reproduce the power result.
+
 <table>
   <tr>
     <td><img src="bridge/codex-pet-bridge/ui/previews/page-overview.png" width="260" alt="Overview page"></td>
@@ -21,15 +53,15 @@ a web dashboard and a menu bar app let you check and control everything.
   </tr>
 </table>
 
-The screen images in this README come from the firmware's own drawing code
-(see [Previews without hardware](#previews-without-hardware)): the pixels are
-exact, but the reflective panel looks different in a room.
+The screen images are host-rendered previews of the firmware's drawing code
+(see [Previews without hardware](#previews-without-hardware)); some may predate
+the latest layout adjustments. A reflective panel also looks different in a room.
 
 ## What the board shows
 
 - **Overview:** which agent is active and what it is doing (thinking, using a
-  tool, searching, waiting for you, done), the task, a pixel pet whose mood
-  follows the agents, time, battery, temperature and humidity, Wi-Fi and
+  tool, searching, waiting for you, done), the task, a static pixel pet, time,
+  battery, temperature and humidity, Wi-Fi and
   bridge status.
 - **Usage:** today's tokens, the context window and the 5-hour / weekly quota
   for Codex, and today's tokens, context and model for Claude Code.
@@ -106,7 +138,7 @@ flowchart LR
     B --- UI["Dashboard /ui"]
     B --- PB["PetBar menu bar app"]
   end
-  Board["ESP32-S3 RLCD board"] -- "GET /esp32/poll every 3 s + telemetry" --> B
+  Board["ESP32-S3 RLCD board"] -- "GET /esp32/poll: 3 s active / 10 s idle" --> B
   B -- "agent status, clock settings, time zone, easter egg" --> Board
   Board -- "GET /esp32/anim/:id/frames" --> B
 ```
@@ -115,15 +147,16 @@ The board polls the bridge with a token. It sends its battery, climate, Wi-Fi
 signal, page and firmware version with every request. The bridge's answer
 carries the agent status plus any clock settings, the time zone and
 easter-egg commands. On the board, a FreeRTOS task on the second core does all
-the networking, so a slow network never freezes the screen or the seconds.
+the networking, so a slow network does not block the screen's main loop.
 
 ## Quick start (Mac)
 
 To have an agent do the install, give it [docs/AGENT_INSTALL.md](docs/AGENT_INSTALL.md).
-It covers checks, permissions and troubleshooting. By hand:
+It covers the base project; the low-power SDK is an additional setup step.
+By hand:
 
 ```bash
-git clone https://github.com/xyuuii/waveshare-rlcd-agent-pet.git
+git clone https://github.com/jlcbk/waveshare-rlcd-agent-pet.git
 cd waveshare-rlcd-agent-pet
 
 # 1. Bridge as LaunchAgents: the first run only shows the plan, --apply does it
@@ -135,9 +168,10 @@ bridge/codex-pet-bridge/tools/mac/install.sh --apply
 cd firmware/agent_pet_display
 tools/make-secrets.sh
 
-# 3. Test, build and flash (find the port with: pio device list, VID:PID 303A:1001)
-pio test -e native
-pio run -e waveshare_rlcd -t upload --upload-port /dev/cu.usbmodem101
+# 3. Prepare the PM SDK and RLCD_PIO_PACKAGES in this shell as described in
+#    tools/pm-libs/README.md. Choose your own 303A:1001 port from pio device list.
+: "${RLCD_PIO_PACKAGES:?Prepare the isolated PM packages first}"
+PLATFORMIO_PACKAGES_DIR="$RLCD_PIO_PACKAGES" pio run -e waveshare_rlcd_pm -t upload --upload-port /dev/cu.usbmodem101
 
 # 4. Menu bar app
 ../../bridge/codex-pet-bridge/macos/PetBar/build.sh --install
@@ -163,8 +197,8 @@ listens on `127.0.0.1` without a token. For LAN use, see
 | BOOT | hold 5 s | easter egg | easter egg |
 | any | while the egg plays | stop it | stop it |
 
-The clock face, 12/24 h and seconds can also be set in the dashboard or PetBar,
-and they survive a reboot.
+The clock face and 12/24 h format can also be set in the dashboard or PetBar
+and survive a reboot. This fork's normal clock views do not display seconds.
 
 ## Repository layout
 
@@ -183,7 +217,7 @@ and they survive a reboot.
 
 | Check | Command |
 | --- | --- |
-| Firmware unit tests (108) | `cd firmware/agent_pet_display && pio test -e native` |
+| Firmware unit tests | `cd firmware/agent_pet_display && pio test -e native` |
 | Firmware build | `pio run -e waveshare_rlcd` |
 | Bridge tests | `cd bridge/codex-pet-bridge && node --test` |
 | Bridge ⇄ firmware contract | `tools/contract-test.sh` |
@@ -233,5 +267,7 @@ This repo includes or derives from several MIT-licensed upstream components:
   `pets/gugugaga` package under the MIT License
 - the Doto font is used under the SIL Open Font License (see
   `firmware/agent_pet_display/THIRD_PARTY_NOTICES.md`)
+- the Inter-derived bitmap glyphs are used under the SIL Open Font License
+  (see the same notices file)
 
 See the preserved license files inside those directories for details.
