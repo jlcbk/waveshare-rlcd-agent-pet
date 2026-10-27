@@ -157,22 +157,35 @@ void drawUsageDetailCard(int y,
 }
 
 void drawOverviewMetric(const ScreenRect& rect, const std::string& label, const std::string& value) {
-  constexpr int valueOffset = 130;
+  // Value column starts at +104 (152px wide): measured widths keep typical
+  // readings intact — "189k / 258k" is 127px at helvB18 and "12 / 250" is
+  // 117px at helvB24. The label column keeps helvB12 but clips at 92px; the
+  // longest stock label (CONTEXT) measures 79px.
+  constexpr int valueOffset = 104;
   gU8g2->setFont(u8g2_font_helvB12_tr);
   gU8g2->drawStr(rect.x, rect.y + 9, clipTextToPixelWidth(label, valueOffset - 12).c_str());
-  gU8g2->setFont(u8g2_font_helvB24_tr);
+  // Step the value down helvB24 -> helvB18 -> helvB12 before ever clipping, so
+  // real readings never lose digits; ".." is reserved for pathological input.
+  // The y offsets keep all three sizes on the helvB24 baseline (y + 27).
   const int available = rect.w - valueOffset;
-  if (gU8g2->getStrWidth(value.c_str()) > available) {
-    gU8g2->setFont(u8g2_font_helvB18_tr);
+  const uint8_t* fonts[] = {u8g2_font_helvB24_tr, u8g2_font_helvB18_tr, u8g2_font_helvB12_tr};
+  const int yOffsets[] = {2, 8, 15};
+  int pick = 0;
+  gU8g2->setFont(fonts[pick]);
+  while (pick < 2 && gU8g2->getStrWidth(value.c_str()) > available) {
+    gU8g2->setFont(fonts[++pick]);
   }
-  gU8g2->drawStr(rect.x + valueOffset, rect.y + 2, clipTextToPixelWidth(value, available).c_str());
+  gU8g2->drawStr(rect.x + valueOffset, rect.y + yOffsets[pick],
+                 clipTextToPixelWidth(value, available).c_str());
 }
 
 void drawOverviewQuota(const ScreenRect& rect, const std::string& label, const std::string& value) {
   const QuotaUsage usage = parseQuotaUsage(value);
   const QuotaBarLayout bars = overviewQuotaBarLayout();
   gU8g2->setFont(u8g2_font_helvB12_tr);
-  gU8g2->drawStr(rect.x, rect.y + 5, clipTextToPixelWidth(label, 56).c_str());
+  // 66px: measured "QUOTA" is 60px and must not clip (".." was shown at 56px);
+  // still 4px clear of the "5H n%" text that starts at card.x + 70.
+  gU8g2->drawStr(rect.x, rect.y + 5, clipTextToPixelWidth(label, 66).c_str());
   const int values[] = {usage.fiveHourPercent, usage.weekPercent};
   const char* names[] = {"5H", "WK"};
   const ScreenRect barRects[] = {bars.fiveHourBar, bars.weekBar};
