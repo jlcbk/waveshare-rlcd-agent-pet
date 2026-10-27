@@ -1,273 +1,205 @@
 # waveshare-rlcd-agent-pet
 
-English · [中文](README.zh-CN.md)
+[English](README.md) · 中文
 
-A desk companion on the Waveshare `ESP32-S3-RLCD-4.2` reflective LCD. It shows
-what your coding agents are doing (Codex, Claude Code, Hermes, OpenClaw). It is
-also a clock, shows the board's battery and room climate, and can play 1-bit
-videos as an easter egg. On the Mac, a small bridge collects agent status, and
-a web dashboard and a menu bar app let you check and control everything.
+一块放在桌上的反射式屏幕（Waveshare `ESP32-S3-RLCD-4.2`），用来显示你的编程智能体在做什么：Codex、Claude Code、Hermes、OpenClaw。它同时是一块时钟，显示电量和室内温湿度，还藏了一个能播放 1-bit 视频的彩蛋。Mac 上有一个小小的 bridge 负责收集状态，另有网页控制台和菜单栏 App 用来查看和控制。
 
-This is a personal fork of [xyuuii/waveshare-rlcd-agent-pet](https://github.com/xyuuii/waveshare-rlcd-agent-pet),
-focused on clearer text and lower power while keeping the screen and Wi-Fi on.
-The original project, bridge and interactive features remain the foundation.
+这是基于 [xyuuii/waveshare-rlcd-agent-pet](https://github.com/xyuuii/waveshare-rlcd-agent-pet) 的个人 fork。我们希望它在屏幕常亮、Wi-Fi 保持连接的情况下，文字更易读，同时尽量降低耗电；原项目的 bridge 和交互能力仍是这个版本的基础。
 
-## What's different in this fork
+## 这个版本做了什么
 
-- Redesigned overview, usage and clock pages with clearer English text, using
-  several prepared bitmap font sizes, including glyphs derived from Inter.
-- Minute-level clocks and a static pet on the normal overview avoid continuous
-  animation; the on-demand easter egg remains available.
-- Automatic light sleep and dynamic CPU frequency scaling, enabled by a
-  separately rebuilt Arduino-ESP32 2.0.17 / ESP-IDF 4.4.7 SDK. Wi-Fi stays
-  connected, using maximum modem power save outside animation streaming.
-- Adaptive bridge polling (about 3 seconds when active, 10 seconds when quiet),
-  skipped unchanged display transfers, and SHTC3 sleep between 30-second samples.
+- 重新调整概览、用量和时钟三个页面，使用多种预先准备的点阵字号，包括由 Inter 生成的字形，让英文信息更易读。
+- 常态页面取消秒显示，宠物保持静态；需要时仍可主动播放彩蛋。
+- 通过单独重编的 Arduino-ESP32 2.0.17 / ESP-IDF 4.4.7 SDK 启用自动轻睡眠和动态调频。Wi-Fi 保持连接，非动画传输时使用更强的无线省电模式。
+- bridge 在活跃时约 3 秒、安静时约 10 秒轮询一次；相同画面不重复发送到屏幕；SHTC3 采样后休眠，约 30 秒采样一次。
 
-### Observed USB current
+### 一次实机电流观察
 
-On one board, with the battery disconnected and an independent USB charger or
-power bank, a numeric USB meter usually showed **15–18 mA** on this version,
-with occasional readings in the **30–40 mA** range. The preceding version was
-usually **20–23 mA**. These are displayed readings, not a logged average or
-true peak; Wi-Fi, the access point, workload, supply and meter can change the
-result. USB input current cannot be used directly as battery current or runtime.
-After boot, light sleep is held off for the first 45 seconds.
+断开电池，用独立 USB 充电器或充电宝供电，在一块板子上通过数字 USB 电流表观察：当前版本多数时候显示 **15–18 mA**，偶尔显示 **30–40 mA**；上一版本多数时候为 **20–23 mA**。
 
-**Build note:** the tested low-power configuration requires a custom PM-enabled
-SDK that is not checked into this repository. The normal `waveshare_rlcd`
-environment can build using the stock SDK but does not provide the same auto
-light sleep. See [PM SDK notes](firmware/agent_pet_display/tools/pm-libs/README.md)
-before trying to reproduce the power result.
+这些是电流表的显示读数，不是仪器记录的长期平均值或真实峰值。路由器、Wi-Fi 信号、工作状态、供电和电流表都会影响结果；USB 输入电流也不能直接当作电池电流推算续航。启动后前 45 秒保留调试窗口，之后才尝试自动轻睡眠。
+
+**构建须知：**上述低功耗版本依赖单独重编的 PM SDK，该 SDK 二进制没有放进仓库。普通 `waveshare_rlcd` 环境可使用官方 SDK 编译，但不会获得相同的自动轻睡眠效果。复现前请先看 [PM SDK 说明](firmware/agent_pet_display/tools/pm-libs/README.md)。
 
 <table>
   <tr>
-    <td><img src="bridge/codex-pet-bridge/ui/previews/page-overview.png" width="260" alt="Overview page"></td>
-    <td><img src="bridge/codex-pet-bridge/ui/previews/page-usage.png" width="260" alt="Usage page"></td>
-    <td><img src="bridge/codex-pet-bridge/ui/previews/clock-segment.png" width="260" alt="Clock page"></td>
+    <td><img src="bridge/codex-pet-bridge/ui/previews/page-overview.png" width="260" alt="概览页"></td>
+    <td><img src="bridge/codex-pet-bridge/ui/previews/page-usage.png" width="260" alt="用量页"></td>
+    <td><img src="bridge/codex-pet-bridge/ui/previews/clock-segment.png" width="260" alt="时钟页"></td>
   </tr>
   <tr>
-    <td align="center">Overview</td>
-    <td align="center">Usage</td>
-    <td align="center">Clock</td>
+    <td align="center">概览</td>
+    <td align="center">用量</td>
+    <td align="center">时钟</td>
   </tr>
 </table>
 
-The screen images are host-rendered previews of the firmware's drawing code
-(see [Previews without hardware](#previews-without-hardware)); some may predate
-the latest layout adjustments. A reflective panel also looks different in a room.
+本页的屏幕图是用固件绘图代码生成的电脑预览（见[不接硬件也能看效果](#不接硬件也能看效果)），部分图片可能早于最近一次布局调整；反射屏的实际观感也会不同。
 
-## What the board shows
+## 板子上显示什么
 
-- **Overview:** which agent is active and what it is doing (thinking, using a
-  tool, searching, waiting for you, done), the task, a static pixel pet, time,
-  battery, temperature and humidity, Wi-Fi and
-  bridge status.
-- **Usage:** today's tokens, the context window and the 5-hour / weekly quota
-  for Codex, and today's tokens, context and model for Claude Code.
-- **Clock:** a full-screen clock in seven faces, with the date, room climate
-  and the agents' status. It keeps time from the board's RTC (stored in UTC)
-  with the Mac's time zone and daylight saving rules.
+- **概览**：哪个智能体在活动、在做什么（思考、调用工具、搜索、等你处理、完成），任务名、静态像素宠物，以及时间、电量、温湿度、Wi-Fi 和 bridge 状态。
+- **用量**：Codex 的今日 token、上下文窗口、5 小时和每周额度；Claude Code 的今日 token、上下文和模型。
+- **时钟**：七种表盘的全屏时钟，附带日期、室内温湿度和智能体状态。时间来自板载 RTC（按 UTC 保存），时区和夏令时规则跟随 Mac。
 
 <table>
   <tr>
-    <td><img src="bridge/codex-pet-bridge/ui/previews/clock-sans.png" width="190" alt="Sans"></td>
-    <td><img src="bridge/codex-pet-bridge/ui/previews/clock-segment.png" width="190" alt="Seven-segment"></td>
-    <td><img src="bridge/codex-pet-bridge/ui/previews/clock-dots.png" width="190" alt="Dot matrix"></td>
-    <td><img src="bridge/codex-pet-bridge/ui/previews/clock-analog.png" width="190" alt="Analog"></td>
+    <td><img src="bridge/codex-pet-bridge/ui/previews/clock-sans.png" width="190" alt="大字"></td>
+    <td><img src="bridge/codex-pet-bridge/ui/previews/clock-segment.png" width="190" alt="七段数码"></td>
+    <td><img src="bridge/codex-pet-bridge/ui/previews/clock-dots.png" width="190" alt="点阵"></td>
+    <td><img src="bridge/codex-pet-bridge/ui/previews/clock-analog.png" width="190" alt="指针表盘"></td>
   </tr>
   <tr>
-    <td align="center">Sans</td>
-    <td align="center">Seven-segment</td>
-    <td align="center">Dot matrix</td>
-    <td align="center">Analog dial</td>
+    <td align="center">大字</td>
+    <td align="center">七段数码</td>
+    <td align="center">点阵</td>
+    <td align="center">指针表盘</td>
   </tr>
   <tr>
-    <td><img src="bridge/codex-pet-bridge/ui/previews/clock-words.png" width="190" alt="Word clock"></td>
-    <td><img src="bridge/codex-pet-bridge/ui/previews/clock-terminal.png" width="190" alt="Terminal"></td>
-    <td><img src="bridge/codex-pet-bridge/ui/previews/clock-pet.png" width="190" alt="Pet"></td>
-    <td><img src="bridge/codex-pet-bridge/ui/previews/egg-builtin.png" width="190" alt="Built-in easter egg"></td>
+    <td><img src="bridge/codex-pet-bridge/ui/previews/clock-words.png" width="190" alt="英文字钟"></td>
+    <td><img src="bridge/codex-pet-bridge/ui/previews/clock-terminal.png" width="190" alt="终端"></td>
+    <td><img src="bridge/codex-pet-bridge/ui/previews/clock-pet.png" width="190" alt="宠物"></td>
+    <td><img src="bridge/codex-pet-bridge/ui/previews/egg-builtin.png" width="190" alt="内置彩蛋"></td>
   </tr>
   <tr>
-    <td align="center">Word clock</td>
-    <td align="center">Terminal</td>
-    <td align="center">Pet</td>
-    <td align="center">Built-in easter egg</td>
+    <td align="center">英文字钟</td>
+    <td align="center">终端</td>
+    <td align="center">宠物</td>
+    <td align="center">内置彩蛋</td>
   </tr>
 </table>
 
-## On the Mac
+## Mac 端
 
-- **Bridge** (`bridge/codex-pet-bridge`): collects agent status and serves the
-  board. It follows Codex sessions, reads Claude Code's session transcripts
-  (no Claude configuration needed), receives Hermes hooks and the OpenClaw
-  plugin, and runs `agent-sync` for the rest. It runs as two LaunchAgents.
-- **Dashboard** at `http://127.0.0.1:17366/ui/`: agents, board telemetry,
-  clock face picker, time zone, and the easter-egg studio.
-- **PetBar** menu bar app: the same status at a glance. From its menu you can
-  switch the board's page and clock face, play the easter egg, open the
-  dashboard and restart the bridge.
+- **Bridge**（`bridge/codex-pet-bridge`）：收集智能体状态，也是板子的数据来源。它跟踪 Codex 会话，读取 Claude Code 的会话记录（无需修改 Claude 的配置），接收 Hermes hook 和 OpenClaw 插件的事件，其余情况交给 `agent-sync`。以两个开机启动项（LaunchAgent）的形式运行。
+- **控制台** `http://127.0.0.1:17366/ui/`：智能体状态、板子遥测、表盘选择、时区和彩蛋工坊。
+- **PetBar 菜单栏 App**：一眼看到同样的状态。在菜单里可以切换板子页面和表盘、播放彩蛋、打开控制台、重启 bridge。
 
-![Dashboard](docs/images/dashboard.png)
+![控制台](docs/images/dashboard.png)
 
-### The easter egg
+### 彩蛋
 
-In the dashboard's easter-egg studio (彩蛋工坊), drop in a local video, for
-example your own copy of *Bad Apple!!*. The browser turns it into 1-bit frames
-(threshold or dither, 10–30 fps, full screen or half size). Black borders baked
-into the video, such as a 4:3 picture inside a 16:9 file, are found and trimmed,
-and the picture either fills the screen or is shown whole. Only those frames
-are uploaded to the bridge on your Mac; the video never leaves the browser.
-Press play and the board streams the frames in 16 KB chunks, on a schedule
-shared with the Mac, so the Mac can play the video's sound in sync. Holding
-BOOT + KEY on the board for 2 seconds plays the default animation, or a
-built-in one when nothing is uploaded.
+在控制台的「彩蛋工坊」里拖入一个本地视频，比如你自己的 *Bad Apple!!*。浏览器会把它转成 1-bit 帧，可选阈值或抖动、10–30 fps、铺满或半尺寸。视频自带的黑边（比如 16:9 文件里的 4:3 画面）会被自动找到并裁掉，画面可以选填满屏幕或保留完整。只有这些黑白帧会上传到你 Mac 上的 bridge，视频本身不会离开浏览器。点播放后，板子以 16 KB 为一块流式下载帧，并和 Mac 按同一个时间表播放，所以 Mac 可以同步放出视频原声。在板子上同时按住 BOOT 和 KEY 2 秒，会播放默认动画；没有上传动画时播放内置彩蛋。
 
-![Easter egg studio](docs/images/egg-studio.png)
+![彩蛋工坊](docs/images/egg-studio.png)
 
-## How it fits together
+## 各部分怎么连在一起
 
 ```mermaid
 flowchart LR
   subgraph Mac
-    CX["Codex sessions"] --> B["codex-pet-bridge :17366"]
-    CC["Claude Code transcripts"] --> B
-    HM["Hermes hooks"] --> B
-    OC["OpenClaw plugin"] --> B
+    CX["Codex 会话"] --> B["codex-pet-bridge :17366"]
+    CC["Claude Code 会话记录"] --> B
+    HM["Hermes hook"] --> B
+    OC["OpenClaw 插件"] --> B
     AS["agent-sync"] --> B
-    B --- UI["Dashboard /ui"]
-    B --- PB["PetBar menu bar app"]
+    B --- UI["控制台 /ui"]
+    B --- PB["PetBar 菜单栏 App"]
   end
-  Board["ESP32-S3 RLCD board"] -- "GET /esp32/poll: 3 s active / 10 s idle" --> B
-  B -- "agent status, clock settings, time zone, easter egg" --> Board
+  Board["ESP32-S3 RLCD 板子"] -- "GET /esp32/poll：活跃 3 秒 / 空闲 10 秒" --> B
+  B -- "智能体状态、表盘设置、时区、彩蛋" --> Board
   Board -- "GET /esp32/anim/:id/frames" --> B
 ```
 
-The board polls the bridge with a token. It sends its battery, climate, Wi-Fi
-signal, page and firmware version with every request. The bridge's answer
-carries the agent status plus any clock settings, the time zone and
-easter-egg commands. On the board, a FreeRTOS task on the second core does all
-the networking, so a slow network does not block the screen's main loop.
+板子带着令牌轮询 bridge，每次都附上电量、温湿度、Wi-Fi 信号、当前页面和固件版本。bridge 的回复里除了智能体状态，还有表盘设置、时区和彩蛋指令。网络请求由第二个核心的 FreeRTOS 任务处理，避免慢网络阻塞屏幕主循环。
 
-## Quick start (Mac)
+## 快速开始（Mac）
 
-To have an agent do the install, give it [docs/AGENT_INSTALL.md](docs/AGENT_INSTALL.md).
-It covers the base project; the low-power SDK is an additional setup step.
-By hand:
+想让智能体代为安装，可参考 [docs/AGENT_INSTALL.md](docs/AGENT_INSTALL.md)；它介绍的是基础项目，低功耗 SDK 还需额外准备。手动安装：
 
 ```bash
 git clone https://github.com/jlcbk/waveshare-rlcd-agent-pet.git
 cd waveshare-rlcd-agent-pet
 
-# 1. Bridge as LaunchAgents: the first run only shows the plan, --apply does it
+# 1. 以开机启动项安装 bridge：第一次只显示计划，加 --apply 才执行
 bridge/codex-pet-bridge/tools/mac/install.sh
 bridge/codex-pet-bridge/tools/mac/install.sh --apply
 
-# 2. Board settings (git-ignored): asks for the Wi-Fi name and password and
-#    builds the bridge URL from this Mac's LAN address and the bridge token
+# 2. 板子配置（git 忽略）：询问 Wi-Fi 名称和密码，
+#    用这台 Mac 的局域网地址和 bridge 令牌拼出 bridge 地址
 cd firmware/agent_pet_display
 tools/make-secrets.sh
 
-# 3. Prepare the PM SDK and RLCD_PIO_PACKAGES in this shell as described in
-#    tools/pm-libs/README.md. Choose your own 303A:1001 port from pio device list.
-: "${RLCD_PIO_PACKAGES:?Prepare the isolated PM packages first}"
+# 3. 先在当前终端按 tools/pm-libs/README.md 准备 PM SDK 和 RLCD_PIO_PACKAGES。
+#    用 pio device list 找到 VID:PID 303A:1001 的实际端口并替换下面的示例。
+: "${RLCD_PIO_PACKAGES:?请先准备隔离的 PM 工具包}"
 PLATFORMIO_PACKAGES_DIR="$RLCD_PIO_PACKAGES" pio run -e waveshare_rlcd_pm -t upload --upload-port /dev/cu.usbmodem101
 
-# 4. Menu bar app
+# 4. 菜单栏 App
 ../../bridge/codex-pet-bridge/macos/PetBar/build.sh --install
 ```
 
-Give the Mac a fixed LAN address (a DHCP reservation), because the address is
-compiled into the firmware. If an older checkout still has real values inside
-`include/app_config.h`, `tools/import-legacy-secrets.sh <old app_config.h>`
-copies them into `secrets.h` instead of step 2.
+请在路由器上给 Mac 固定局域网地址（DHCP 保留），因为这个地址会编进固件。如果旧的代码目录里 `include/app_config.h` 还写着真实配置，可以用 `tools/import-legacy-secrets.sh <旧的 app_config.h>` 代替第 2 步，把值搬进 `secrets.h`。
 
-The bridge also runs anywhere Node 20 runs: `node bridge/codex-pet-bridge/src/bridge-server.js`
-listens on `127.0.0.1` without a token. For LAN use, see
-[bridge/codex-pet-bridge/docs/SECURITY.md](bridge/codex-pet-bridge/docs/SECURITY.md).
+bridge 在任何装有 Node 20 的机器上都能跑：`node bridge/codex-pet-bridge/src/bridge-server.js` 默认只监听 `127.0.0.1`，不需要令牌。要在局域网里用，请看 [bridge/codex-pet-bridge/docs/SECURITY.md](bridge/codex-pet-bridge/docs/SECURITY.md)。
 
-## Buttons
+## 按键
 
-| Button | Press | Overview / usage page | Clock page |
+| 按键 | 操作 | 概览 / 用量页 | 时钟页 |
 | --- | --- | --- | --- |
-| BOOT | short | next page (overview → usage → clock) | next page |
-| BOOT | 1.5 s | follow the next agent | next clock face |
-| KEY | short or 1.5 s | follow the next agent | next clock face |
-| BOOT + KEY | hold both 2 s | easter egg | easter egg |
-| BOOT | hold 5 s | easter egg | easter egg |
-| any | while the egg plays | stop it | stop it |
+| BOOT | 短按 | 下一页（概览 → 用量 → 时钟） | 下一页 |
+| BOOT | 按住 1.5 秒 | 切换跟随的智能体 | 下一个表盘 |
+| KEY | 短按或按住 1.5 秒 | 切换跟随的智能体 | 下一个表盘 |
+| BOOT + KEY | 一起按住 2 秒 | 彩蛋 | 彩蛋 |
+| BOOT | 按住 5 秒 | 彩蛋 | 彩蛋 |
+| 任意键 | 彩蛋播放中 | 停止 | 停止 |
 
-The clock face and 12/24 h format can also be set in the dashboard or PetBar
-and survive a reboot. This fork's normal clock views do not display seconds.
+表盘和 12/24 小时制可以在控制台或 PetBar 里设置，重启后保留。本 fork 的常态时钟页面不显示秒。
 
-## Repository layout
+## 目录结构
 
-| Path | What |
+| 路径 | 内容 |
 | --- | --- |
-| `firmware/agent_pet_display/` | PlatformIO firmware: screens, clock faces, pet state machine, network task, easter-egg player |
-| `firmware/agent_pet_display/tools/` | `make-secrets.sh`, `import-legacy-secrets.sh`, `native_tests.sh`, `host_render/` |
-| `bridge/codex-pet-bridge/` | the bridge ([README](bridge/codex-pet-bridge/README.md) · [中文](bridge/codex-pet-bridge/README.zh-CN.md)) |
-| `bridge/codex-pet-bridge/ui/` | the dashboard (static files served by the bridge) |
-| `bridge/codex-pet-bridge/tools/mac/` | Mac installer and its test |
-| `bridge/codex-pet-bridge/macos/PetBar/` | the menu bar app (Swift, built with the Command Line Tools) |
-| `tools/contract-test.sh` | checks the bridge ⇄ firmware protocol with the real code on both sides |
-| `docs/AGENT_INSTALL.md` | install runbook for coding agents |
+| `firmware/agent_pet_display/` | PlatformIO 固件：各页面、表盘、宠物状态机、网络任务、彩蛋播放 |
+| `firmware/agent_pet_display/tools/` | `make-secrets.sh`、`import-legacy-secrets.sh`、`native_tests.sh`、`host_render/` |
+| `bridge/codex-pet-bridge/` | bridge（[README](bridge/codex-pet-bridge/README.md) · [中文](bridge/codex-pet-bridge/README.zh-CN.md)） |
+| `bridge/codex-pet-bridge/ui/` | 控制台（由 bridge 提供的静态页面） |
+| `bridge/codex-pet-bridge/tools/mac/` | Mac 安装脚本及其测试 |
+| `bridge/codex-pet-bridge/macos/PetBar/` | 菜单栏 App（Swift，用 Command Line Tools 编译） |
+| `tools/contract-test.sh` | 用两端的真实代码检查 bridge ⇄ 固件协议 |
+| `docs/AGENT_INSTALL.md` | 给编程智能体的安装手册 |
 
-## Development
+## 开发
 
-| Check | Command |
+| 检查 | 命令 |
 | --- | --- |
-| Firmware unit tests | `cd firmware/agent_pet_display && pio test -e native` |
-| Firmware build | `pio run -e waveshare_rlcd` |
-| Bridge tests | `cd bridge/codex-pet-bridge && node --test` |
-| Bridge ⇄ firmware contract | `tools/contract-test.sh` |
-| Dashboard end to end (Chromium) | `node bridge/codex-pet-bridge/tools/ui-e2e.mjs <video>` |
-| Mac installer | `bridge/codex-pet-bridge/tools/mac/test-install.sh` |
+| 固件单元测试 | `cd firmware/agent_pet_display && pio test -e native` |
+| 固件编译 | `pio run -e waveshare_rlcd` |
+| bridge 测试 | `cd bridge/codex-pet-bridge && node --test` |
+| bridge ⇄ 固件协议 | `tools/contract-test.sh` |
+| 控制台端到端（Chromium） | `node bridge/codex-pet-bridge/tools/ui-e2e.mjs <视频>` |
+| Mac 安装脚本 | `bridge/codex-pet-bridge/tools/mac/test-install.sh` |
 
-Without PlatformIO, `firmware/agent_pet_display/tools/native_tests.sh` builds and
-runs the same native tests with the system compiler.
+没有 PlatformIO 时，`firmware/agent_pet_display/tools/native_tests.sh` 会用系统编译器编译并运行同一批单元测试。
 
-### Previews without hardware
+### 不接硬件也能看效果
 
-`firmware/agent_pet_display/tools/host_render/build.sh` compiles the real drawing
-code and U8g2 for the host and writes every screen as a 400×300 image.
-`tools/host_render/export_ui_previews.py` turns them into the dashboard's
-face previews.
+`firmware/agent_pet_display/tools/host_render/build.sh` 用电脑编译真实的绘图代码和 U8g2，把每个画面输出成 400×300 的图片。`tools/host_render/export_ui_previews.py` 再把它们转成控制台里的表盘预览图。
 
-## Security and privacy
+## 安全与隐私
 
-- The bridge listens on the LAN only with a token. The token lives in
-  `~/.codex-pet-bridge/token` (0600), not in LaunchAgent plists or the repo.
-- The dashboard API answers only same-origin requests to the machine's own
-  addresses, so other web pages cannot read it or reach it through DNS
-  rebinding.
-- Wi-Fi and bridge credentials for the board live in the git-ignored
-  `include/secrets.h`; the helper scripts never print them.
-- Videos for the easter egg are decoded in the browser. Only 1-bit frames reach
-  the bridge, and they stay on the Mac.
+- bridge 只有在设置了令牌时才监听局域网。令牌保存在 `~/.codex-pet-bridge/token`（权限 0600），不写进开机启动项的 plist，也不进仓库。
+- 控制台 API 只接受发往本机地址的同源请求，其他网页读不到，也无法借 DNS rebinding 访问。
+- 板子的 Wi-Fi 和 bridge 凭据放在 git 忽略的 `include/secrets.h` 里，辅助脚本不会打印它们。
+- 彩蛋视频在浏览器里解码，只有 1-bit 帧会到达 bridge，并且留在 Mac 上。
 
-## Hardware notes
+## 硬件说明
 
-- Board: Waveshare `ESP32-S3-RLCD-4.2` (ESP32-S3, 16 MB flash)
-- Display: 300×400 ST7305 monochrome reflective LCD, used as 400×300
-- RTC: `PCF85063`; climate sensor: `SHTC3`
-- Buttons: BOOT (GPIO0) and KEY (GPIO18)
-- Power: ADC battery reading; the charge-state GPIO is not known yet
-  (`kChargeSensePin = -1`)
+- 板子：Waveshare `ESP32-S3-RLCD-4.2`（ESP32-S3，16 MB 闪存）
+- 屏幕：300×400 ST7305 单色反射式 LCD，按 400×300 横屏使用
+- RTC：`PCF85063`；温湿度传感器：`SHTC3`
+- 按键：BOOT（GPIO0）和 KEY（GPIO18）
+- 电源：用 ADC 读电池电压；充电状态引脚还没确定（`kChargeSensePin = -1`）
 
-## Upstream and attribution
+## 上游与致谢
 
-This repo includes or derives from several MIT-licensed upstream components:
+本仓库包含或改编自以下 MIT 许可的上游组件：
 
-- `bridge/codex-pet-bridge` is based on the `codex-pet-bridge` project
-- `firmware/agent_pet_display/lib/SensorLib` is from Lewis He
-- the RLCD board support and wiring were adapted from Waveshare examples
-- the GUGUGAGA pet artwork was converted to a monochrome RLCD bitmap from
-  [`drlrf/cc-guga`](https://github.com/drlrf/cc-guga), which publishes the
-  `pets/gugugaga` package under the MIT License
-- the Doto font is used under the SIL Open Font License (see
-  `firmware/agent_pet_display/THIRD_PARTY_NOTICES.md`)
-- the Inter-derived bitmap glyphs are used under the SIL Open Font License
-  (see the same notices file)
+- `bridge/codex-pet-bridge` 基于 `codex-pet-bridge` 项目
+- `firmware/agent_pet_display/lib/SensorLib` 来自 Lewis He
+- RLCD 板级支持和接线改编自 Waveshare 示例
+- GUGUGAGA 宠物形象由 [`drlrf/cc-guga`](https://github.com/drlrf/cc-guga) 以 MIT 许可发布的 `pets/gugugaga` 转换为单色 RLCD 位图
+- Doto 字体按 SIL Open Font License 使用（见 `firmware/agent_pet_display/THIRD_PARTY_NOTICES.md`）
+- Inter 衍生点阵字形按 SIL Open Font License 使用（见同一份许可说明）
 
-See the preserved license files inside those directories for details.
+各目录中保留了对应的许可文件。
