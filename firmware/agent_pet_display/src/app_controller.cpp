@@ -362,5 +362,8 @@ void AppController::tick() {
     gLastRender = now;
     gForceRender = false;
   }
-  delay(15);
+  // Idle pacing: buttons wake the chip from light sleep via the RTC pads, so
+  // a 100 ms poll cadence is enough; a tighter loop here would keep waking
+  // the CPU ~67 times/s and starve auto light sleep.
+  delay(100);
 }

@@ -66,6 +66,7 @@ extern "C" uint32_t esp_sleep_get_light_sleep_count(void) __attribute__((weak));
 namespace {
 
 constexpr int kIdleFreqMhz = 80;
+constexpr int kIdleMinFreqMhz = 40;  // DFS floor while awake; Wi-Fi PM locks lift it to 80 on demand
 constexpr int kEggFreqMhz = 240;
 // USB Serial/JTAG is unreliable under auto light sleep (ESP-IDF 4.4 docs):
 // keep a quiet boot window with light sleep off so boot logs and flashing
@@ -107,7 +108,7 @@ void pmBegin() {
                   static_cast<int>(gLastWindowAwakePercent + 0.5f));
   }
   gRtcMagic = kRtcMagic;
-  gPmOk = applyPmConfig(kIdleFreqMhz, kIdleFreqMhz, false) == ESP_OK;
+  gPmOk = applyPmConfig(kIdleFreqMhz, kIdleMinFreqMhz, false) == ESP_OK;
   if (gPmOk) {
     Serial.printf("[PM] SDK supports esp_pm; idle %d MHz, light sleep after %lus\n", kIdleFreqMhz,
                   static_cast<unsigned long>(kBootWindowMs / 1000));
@@ -128,7 +129,7 @@ void pmEnableLightSleep() {
     return;
   }
   gLightSleepWanted = kLightSleepCompileEnabled;
-  const esp_err_t err = applyPmConfig(kIdleFreqMhz, kIdleFreqMhz, kLightSleepCompileEnabled);
+  const esp_err_t err = applyPmConfig(kIdleFreqMhz, kIdleMinFreqMhz, kLightSleepCompileEnabled);
   gArmSettled = (err == ESP_OK);  // false -> caller retries on a later tick
   if (gArmSettled) {
     Serial.printf("[PM] idle policy settled: 80 MHz, light sleep %s\n",
@@ -155,7 +156,7 @@ void pmEggPerformanceOn() {
 
 void pmEggPerformanceOff() {
   if (gPmOk) {
-    const esp_err_t err = applyPmConfig(kIdleFreqMhz, kIdleFreqMhz, gLightSleepWanted);
+    const esp_err_t err = applyPmConfig(kIdleFreqMhz, kIdleMinFreqMhz, gLightSleepWanted);
     gArmSettled = (err == ESP_OK);  // wanted state restored (or still off in A/B build)
     Serial.printf("[PM] egg end: 80 MHz, light sleep %s -> %s\n", gLightSleepWanted ? "on" : "off",
                   err == ESP_OK ? "ok" : "FAILED");

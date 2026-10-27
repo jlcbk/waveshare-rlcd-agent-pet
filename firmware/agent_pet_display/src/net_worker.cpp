@@ -340,7 +340,9 @@ void netTask(void*) {
     if (connected && streaming) {
       fillStream();
     }
-    vTaskDelay(pdMS_TO_TICKS(streaming ? 2 : 40));
+    // Idle pacing 100 ms: poll scheduling and status checks tolerate it;
+    // streaming keeps its 2 ms cadence.
+    vTaskDelay(pdMS_TO_TICKS(streaming ? 2 : 100));
   }
 }
 
