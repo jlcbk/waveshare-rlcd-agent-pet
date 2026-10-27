@@ -48,7 +48,8 @@ bool loadDeviceSettings(DeviceSettingsState& state) {
   const uint8_t style = prefs.getUChar("style", 0);
   state.display.clockStyle = style < kClockStyleCount ? static_cast<ClockStyle>(style) : ClockStyle::Sans;
   state.display.hour12 = prefs.getBool("h12", false);
-  state.display.showSeconds = prefs.getBool("sec", true);
+  // Seconds are retired from every page; the key stays for protocol compat.
+  state.display.showSeconds = prefs.getBool("sec", false);
   const uint8_t page = prefs.getUChar("page", 0);
   state.page = page < kScreenPageCount ? static_cast<ScreenPage>(page) : ScreenPage::Overview;
   state.displayRev = prefs.getUInt("drev", 0);

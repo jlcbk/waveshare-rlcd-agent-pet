@@ -82,11 +82,54 @@ std::vector<Scene> buildScenes() {
   std::vector<Scene> scenes;
   scenes.push_back({"overview-codex-thinking", codexAgent("thinking", AgentStatus::Running), battery(84, 3980),
                     sampleEnvironment(), onlineNetwork(), ScreenPage::Overview, 1000});
+  AgentState done = codexAgent("done", AgentStatus::Completed);
+  done.task = "mac-codex-runtime";
+  done.usageToday = "1.6M tok";
+  done.usageContext = "121k / 475k";
+  done.usageQuota = "5H 90% WK 78%";
+  EnvironmentState photoEnv = sampleEnvironment();
+  photoEnv.year = 2026;
+  photoEnv.month = 10;
+  photoEnv.day = 27;
+  photoEnv.hour = 12;
+  photoEnv.minute = 3;
+  photoEnv.second = 1;
+  photoEnv.temperatureC = 19.3f;
+  photoEnv.humidityPct = 34.0f;
+  NetworkState photoNetwork = onlineNetwork();
+  photoNetwork.rssi = -46;
+  scenes.push_back({"overview-codex-done", done, battery(88, 3980), photoEnv, photoNetwork,
+                    ScreenPage::Overview, 1000});
+  AgentState longAttention = codexAgent("needs-attention", AgentStatus::NeedsAttention);
+  longAttention.source = SourceKind::OpenClaw;
+  longAttention.task = "Review the unusually long project request before continuing";
+  longAttention.usageToday = "1234567890123456789012345M tokens";
+  longAttention.usageContext = "1234567890123k / 1234567890123k";
+  longAttention.usageQuota = "5H 100% WK 99%";
+  longAttention.focusMode = FocusMode::Pinned;
+  longAttention.focusIndex = 1;
+  NetworkState reconnecting = onlineNetwork();
+  reconnecting.wifiConnected = false;
+  reconnecting.wifiConnecting = true;
+  PowerState lowBattery = battery(4, 3410);
+  lowBattery.lowBattery = true;
+  scenes.push_back({"overview-attention-long", longAttention, lowBattery, photoEnv, onlineNetwork(),
+                    ScreenPage::Overview, 1000});
+  AgentState otherMetrics = codexAgent("working", AgentStatus::Running);
+  otherMetrics.usageQuotaStyle = "text";
+  otherMetrics.usageQuotaLabel = "CREDITS";
+  otherMetrics.usageQuota = "12 / 250";
+  EnvironmentState noTimeEnv = sampleEnvironment();
+  noTimeEnv.clockValid = false;
+  scenes.push_back({"overview-text-metric-no-time", otherMetrics, battery(84, 3980), noTimeEnv, onlineNetwork(),
+                    ScreenPage::Overview, 1000});
   scenes.push_back({"usage-codex", codexAgent("tool-use", AgentStatus::Running), battery(84, 3980),
                     sampleEnvironment(), onlineNetwork(), ScreenPage::Usage, 1000});
   AgentState offline{};
   NetworkState wifiOk = onlineNetwork();
   scenes.push_back({"overview-bridge-offline", offline, battery(84, 3980), sampleEnvironment(), wifiOk,
+                    ScreenPage::Overview, 1000});
+  scenes.push_back({"overview-wifi-reconnecting", offline, lowBattery, noTimeEnv, reconnecting,
                     ScreenPage::Overview, 1000});
 
   // Clock page: every style with a busy Codex plus two other agents.

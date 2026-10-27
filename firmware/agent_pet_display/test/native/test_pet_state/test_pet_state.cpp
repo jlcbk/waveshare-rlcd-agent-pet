@@ -21,7 +21,7 @@ void test_thinking_agent_gets_dedicated_pet_mode(void) {
 
   TEST_ASSERT_NOT_EQUAL(static_cast<int>(PetMode::Busy), static_cast<int>(view.petMode));
   TEST_ASSERT_EQUAL_STRING("THINKING", view.statusDetail.c_str());
-  TEST_ASSERT_EQUAL_STRING("10:24:30", view.sidebarTime.c_str());
+  TEST_ASSERT_EQUAL_STRING("10:24", view.sidebarTime.c_str());
   TEST_ASSERT_EQUAL_STRING("2026/06/08", view.sidebarDate.c_str());
   TEST_ASSERT_EQUAL_STRING("23.5C 58%", view.sidebarClimate.c_str());
   TEST_ASSERT_EQUAL_STRING("CODEX THNK", view.sidebarAgent.c_str());
@@ -209,8 +209,8 @@ void test_wifi_connected_bridge_offline_gets_clear_footer(void) {
 
   const DisplayState view = deriveDisplayState(agent, power, environment, ScreenPage::Overview, network);
 
-  TEST_ASSERT_EQUAL_STRING("WIFI -61", view.linkLabel.c_str());
-  TEST_ASSERT_EQUAL_STRING("WIFI -61dBm", view.networkLine.c_str());
+  TEST_ASSERT_EQUAL_STRING("WIFI 3/4", view.linkLabel.c_str());
+  TEST_ASSERT_EQUAL_STRING("WIFI 3/4", view.networkLine.c_str());
   TEST_ASSERT_EQUAL_STRING("BRIDGE OFF", view.bridgeLine.c_str());
   TEST_ASSERT_EQUAL_STRING("Bridge offline; WiFi OK", view.footerMessage.c_str());
 }
@@ -312,7 +312,7 @@ void test_clock_view_without_bridge_or_time(void) {
   TEST_ASSERT_FALSE(view.clock.agentConnected);
   TEST_ASSERT_EQUAL(0, view.clock.agentCount);
   TEST_ASSERT_EQUAL_STRING("BRIDGE OFF", view.clock.bridgeLabel.c_str());
-  TEST_ASSERT_EQUAL_STRING("WIFI -58", view.clock.linkLabel.c_str());
+  TEST_ASSERT_EQUAL_STRING("WIFI 3/4", view.clock.linkLabel.c_str());
   TEST_ASSERT_EQUAL_STRING("zzz", view.clock.petBubble.c_str());
 }
 

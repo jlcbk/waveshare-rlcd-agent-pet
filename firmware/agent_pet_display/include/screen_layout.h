@@ -12,9 +12,8 @@ struct QuotaBarLayout {
   ScreenRect weekBar;
 };
 
-ScreenRect overviewPetPanelRect();
-ScreenRect overviewRightInfoCardRect(int index);
 ScreenRect overviewTimeCardRect();
 ScreenRect overviewStatusCardRect();
 ScreenRect overviewMetricCardRect(int index);
+ScreenRect overviewPetPanelRect();
 QuotaBarLayout overviewQuotaBarLayout();

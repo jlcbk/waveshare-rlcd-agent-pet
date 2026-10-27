@@ -2,86 +2,53 @@
 
 #include "screen_layout.h"
 
-ScreenRect overviewRightInfoCardRect(int index);
-
 void setUp(void) {}
-
 void tearDown(void) {}
 
-void test_overview_time_card_and_status_card_have_poster_scale_height(void) {
-  const ScreenRect timeCard = overviewTimeCardRect();
-  const ScreenRect statusCard = overviewStatusCardRect();
-  const ScreenRect metricCard = overviewMetricCardRect(0);
-
-  TEST_ASSERT_TRUE(timeCard.h >= 52);
-  TEST_ASSERT_TRUE(statusCard.h >= 68);
-  TEST_ASSERT_TRUE(timeCard.h > metricCard.h);
-  TEST_ASSERT_TRUE(statusCard.h > metricCard.h);
+void test_overview_sections_fit_and_do_not_overlap(void) {
+  const ScreenRect sections[] = {overviewTimeCardRect(), overviewStatusCardRect(),
+                                 overviewMetricCardRect(0), overviewMetricCardRect(1),
+                                 overviewMetricCardRect(2)};
+  for (int i = 0; i < 5; ++i) {
+    TEST_ASSERT_EQUAL(12, sections[i].x);
+    TEST_ASSERT_TRUE(sections[i].y >= 25);
+    TEST_ASSERT_TRUE(sections[i].y + sections[i].h <= 272);
+    if (i > 0) TEST_ASSERT_TRUE(sections[i - 1].y + sections[i - 1].h <= sections[i].y);
+  }
+  // The three metric cards form the left column next to the pet panel.
+  for (int i = 0; i < 3; ++i) {
+    TEST_ASSERT_EQUAL(256, sections[2 + i].w);
+  }
 }
 
-void test_overview_metric_cards_stack_without_overlap(void) {
-  const ScreenRect first = overviewMetricCardRect(0);
-  const ScreenRect second = overviewMetricCardRect(1);
-  const ScreenRect third = overviewMetricCardRect(2);
-
-  TEST_ASSERT_EQUAL(first.x, second.x);
-  TEST_ASSERT_EQUAL(first.x, third.x);
-  TEST_ASSERT_TRUE(first.y + first.h < second.y);
-  TEST_ASSERT_TRUE(second.y + second.h < third.y);
-  TEST_ASSERT_TRUE(third.h >= 28);
+void test_overview_pet_panel_sits_right_of_metrics(void) {
+  const ScreenRect pet = overviewPetPanelRect();
+  const ScreenRect firstMetric = overviewMetricCardRect(0);
+  const ScreenRect lastMetric = overviewMetricCardRect(2);
+  // Right column, clear of the 256px metric column, spanning the metric band.
+  TEST_ASSERT_TRUE(pet.x >= firstMetric.x + firstMetric.w + 8);
+  TEST_ASSERT_TRUE(pet.x + pet.w <= 388);
+  TEST_ASSERT_TRUE(pet.y >= firstMetric.y);
+  TEST_ASSERT_TRUE(pet.y + pet.h <= 272);
+  TEST_ASSERT_TRUE(lastMetric.y + lastMetric.h <= 272);
+  // Room for the 64x64 sprite plus a bubble strip.
+  TEST_ASSERT_TRUE(pet.w >= 64 && pet.h >= 64 + 24);
 }
 
-void test_overview_uses_companion_badge_instead_of_large_pet_panel(void) {
-  const ScreenRect petPanel = overviewPetPanelRect();
-  const ScreenRect timeCard = overviewTimeCardRect();
-  const ScreenRect statusCard = overviewStatusCardRect();
-  const ScreenRect metricCard = overviewMetricCardRect(0);
-
-  TEST_ASSERT_TRUE(petPanel.w <= 120);
-  TEST_ASSERT_TRUE(petPanel.h <= 92);
-  TEST_ASSERT_TRUE(timeCard.w >= 220);
-  TEST_ASSERT_TRUE(timeCard.w > petPanel.w);
-  TEST_ASSERT_EQUAL(timeCard.x, metricCard.x);
-  TEST_ASSERT_EQUAL(timeCard.w, metricCard.w);
-  TEST_ASSERT_TRUE(metricCard.h >= 24);
-  TEST_ASSERT_TRUE(petPanel.y > statusCard.y);
-}
-
-void test_overview_right_column_is_filled_above_companion_badge(void) {
-  const ScreenRect topInfo = overviewRightInfoCardRect(0);
-  const ScreenRect lowerInfo = overviewRightInfoCardRect(1);
-  const ScreenRect petPanel = overviewPetPanelRect();
-
-  TEST_ASSERT_EQUAL(petPanel.x, topInfo.x);
-  TEST_ASSERT_EQUAL(petPanel.w, topInfo.w);
-  TEST_ASSERT_EQUAL(petPanel.x, lowerInfo.x);
-  TEST_ASSERT_EQUAL(petPanel.w, lowerInfo.w);
-  TEST_ASSERT_TRUE(topInfo.y < lowerInfo.y);
-  TEST_ASSERT_TRUE(topInfo.h >= 54);
-  TEST_ASSERT_TRUE(lowerInfo.h >= 56);
-  TEST_ASSERT_TRUE(lowerInfo.y + lowerInfo.h <= petPanel.y - 4);
-  TEST_ASSERT_TRUE(petPanel.y + petPanel.h <= 268);
-}
-
-void test_overview_quota_bars_fit_within_quota_card(void) {
-  const ScreenRect quotaCard = overviewMetricCardRect(2);
-  const ScreenRect petPanel = overviewPetPanelRect();
+void test_quota_bars_are_separate_and_fit_the_quota_section(void) {
+  const ScreenRect quota = overviewMetricCardRect(2);
   const QuotaBarLayout bars = overviewQuotaBarLayout();
-
-  TEST_ASSERT_TRUE(bars.fiveHourBar.x >= quotaCard.x + 92);
-  TEST_ASSERT_TRUE(bars.fiveHourBar.x + bars.fiveHourBar.w <= quotaCard.x + quotaCard.w - 8);
-  TEST_ASSERT_TRUE(bars.weekBar.x >= quotaCard.x + 92);
-  TEST_ASSERT_TRUE(bars.weekBar.x + bars.weekBar.w <= quotaCard.x + quotaCard.w - 8);
-  TEST_ASSERT_TRUE(bars.fiveHourBar.y < bars.weekBar.y);
-  TEST_ASSERT_TRUE(quotaCard.x + quotaCard.w < petPanel.x);
+  TEST_ASSERT_TRUE(bars.fiveHourBar.x >= quota.x);
+  TEST_ASSERT_TRUE(bars.fiveHourBar.x + bars.fiveHourBar.w < bars.weekBar.x);
+  TEST_ASSERT_TRUE(bars.weekBar.x + bars.weekBar.w <= quota.x + quota.w);
+  TEST_ASSERT_TRUE(bars.fiveHourBar.y >= quota.y);
+  TEST_ASSERT_TRUE(bars.weekBar.y + bars.weekBar.h <= quota.y + quota.h);
 }
 
 int main(void) {
   UNITY_BEGIN();
-  RUN_TEST(test_overview_time_card_and_status_card_have_poster_scale_height);
-  RUN_TEST(test_overview_metric_cards_stack_without_overlap);
-  RUN_TEST(test_overview_uses_companion_badge_instead_of_large_pet_panel);
-  RUN_TEST(test_overview_right_column_is_filled_above_companion_badge);
-  RUN_TEST(test_overview_quota_bars_fit_within_quota_card);
+  RUN_TEST(test_overview_sections_fit_and_do_not_overlap);
+  RUN_TEST(test_overview_pet_panel_sits_right_of_metrics);
+  RUN_TEST(test_quota_bars_are_separate_and_fit_the_quota_section);
   return UNITY_END();
 }

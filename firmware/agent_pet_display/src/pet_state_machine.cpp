@@ -210,6 +210,21 @@ std::string focusLabelText(const AgentState& agent) {
   return "AUTO";
 }
 
+// Coarse signal bars instead of raw dBm: the integer readout flipped the text
+// on nearly every sample and forced extra panel transfers.
+int rssiBars(int rssi) {
+  if (rssi >= -55) {
+    return 4;
+  }
+  if (rssi >= -66) {
+    return 3;
+  }
+  if (rssi >= -77) {
+    return 2;
+  }
+  return 1;
+}
+
 std::string wifiLinkLabel(const NetworkState& network) {
   if (!network.wifiKnown) {
     return "WIFI --";
@@ -217,7 +232,7 @@ std::string wifiLinkLabel(const NetworkState& network) {
   if (network.wifiConnected) {
     if (network.rssi < 0) {
       char buffer[16];
-      snprintf(buffer, sizeof(buffer), "WIFI %d", network.rssi);
+      snprintf(buffer, sizeof(buffer), "WIFI %d/4", rssiBars(network.rssi));
       return buffer;
     }
     return "WIFI OK";
@@ -232,7 +247,7 @@ std::string networkLineText(const NetworkState& network) {
   if (network.wifiConnected) {
     if (network.rssi < 0) {
       char buffer[18];
-      snprintf(buffer, sizeof(buffer), "WIFI %ddBm", network.rssi);
+      snprintf(buffer, sizeof(buffer), "WIFI %d/4", rssiBars(network.rssi));
       return buffer;
     }
     return "WIFI OK";
@@ -408,12 +423,12 @@ DisplayState deriveDisplayState(const AgentState& agent,
   if (environment.clockValid) {
     char timeBuffer[12];
     char dateBuffer[16];
+    // Minutes only: seconds are gone from all three pages.
     snprintf(timeBuffer,
              sizeof(timeBuffer),
-             "%02d:%02d:%02d",
+             "%02d:%02d",
              environment.hour,
-             environment.minute,
-             environment.second);
+             environment.minute);
     snprintf(dateBuffer,
              sizeof(dateBuffer),
              "%04d/%02d/%02d",

@@ -176,14 +176,6 @@ void formatHourMinute(const ClockView& v, char* out, size_t size) {
   }
 }
 
-void formatSeconds(const ClockView& v, char* out, size_t size) {
-  if (!v.timeValid) {
-    snprintf(out, size, "--");
-    return;
-  }
-  snprintf(out, size, "%02d", v.second);
-}
-
 void formatDate(const ClockView& v, char* out, size_t size) {
   if (!v.timeValid) {
     snprintf(out, size, "SYNCING TIME");
@@ -277,33 +269,13 @@ void drawSansFace(U8G2& g, const ClockView& v) {
   hairline(g, 22);
 
   char hm[8];
-  char sec[4];
   formatHourMinute(v, hm, sizeof(hm));
-  formatSeconds(v, sec, sizeof(sec));
   const int hmWidth = fontWidth(g, u8g2_font_logisoso92_tn, hm);
-  const int secWidth = v.showSeconds ? fontWidth(g, u8g2_font_logisoso42_tn, sec) : 0;
-  const int gap = v.showSeconds ? 12 : 0;
-  const int x = (kWidth - hmWidth - gap - secWidth) / 2;
+  const int x = (kWidth - hmWidth) / 2;
   const int top = 38;
   fontText(g, u8g2_font_logisoso92_tn, x, top, hm);
-  if (v.showSeconds) {
-    fontText(g, u8g2_font_logisoso42_tn, x + hmWidth + gap, top + 92 - 42, sec);
-  }
   if (v.hour12 && v.timeValid) {
-    drawDoto(g, DotoFontSize::Medium, x + hmWidth + gap, top + 6, isAfternoon(v.hour) ? "PM" : "AM");
-  }
-
-  // Seconds rail: one notch per second, tall marks every five.
-  const int railX = 20;
-  const int railY = 150;
-  g.drawHLine(railX, railY + 6, 60 * 6);
-  for (int s = 0; s < 60; ++s) {
-    const int sx = railX + s * 6;
-    if (v.timeValid && s <= v.second) {
-      g.drawBox(sx, railY, 5, 5);
-    } else if (s % 5 == 0) {
-      g.drawVLine(sx + 2, railY + 2, 3);
-    }
+    drawDoto(g, DotoFontSize::Medium, x + hmWidth, top + 6, isAfternoon(v.hour) ? "PM" : "AM");
   }
 
   char date[32];
@@ -336,17 +308,19 @@ void drawSansFace(U8G2& g, const ClockView& v) {
     const int px = pillX + index * (pillW + pillGap);
     g.drawRFrame(px, pillY, pillW, pillH, 8);
   }
-  const int tempWidth = fontWidth(g, u8g2_font_helvB14_tr, temp);
+  // helvB18 (ascent 19) fits the 112x30 pills and the 24px word-grid cells;
+  // helvB24 would overflow both, so the small text tops out here.
+  const int tempWidth = fontWidth(g, u8g2_font_helvB18_tr, temp);
   const int tempX = pillX + (pillW - tempWidth - 16) / 2;
-  fontText(g, u8g2_font_helvB14_tr, tempX, pillY + 8, temp);
-  degreeMark(g, tempX + tempWidth + 4, pillY + 10, 2);
-  fontText(g, u8g2_font_helvB14_tr, tempX + tempWidth + 8, pillY + 8, "C");
-  const int humWidth = fontWidth(g, u8g2_font_helvB14_tr, hum);
-  fontText(g, u8g2_font_helvB14_tr, pillX + pillW + pillGap + (pillW - humWidth) / 2, pillY + 8, hum);
+  fontText(g, u8g2_font_helvB18_tr, tempX, pillY + 6, temp);
+  degreeMark(g, tempX + tempWidth + 4, pillY + 8, 2);
+  fontText(g, u8g2_font_helvB18_tr, tempX + tempWidth + 8, pillY + 6, "C");
+  const int humWidth = fontWidth(g, u8g2_font_helvB18_tr, hum);
+  fontText(g, u8g2_font_helvB18_tr, pillX + pillW + pillGap + (pillW - humWidth) / 2, pillY + 6, hum);
   const int batX = pillX + (pillW + pillGap) * 2;
-  const int batWidth = fontWidth(g, u8g2_font_helvB14_tr, bat);
+  const int batWidth = fontWidth(g, u8g2_font_helvB18_tr, bat);
   batteryIcon(g, batX + (pillW - batWidth - 30) / 2, pillY + 10, v);
-  fontText(g, u8g2_font_helvB14_tr, batX + (pillW - batWidth - 30) / 2 + 30, pillY + 8, bat);
+  fontText(g, u8g2_font_helvB18_tr, batX + (pillW - batWidth - 30) / 2 + 30, pillY + 6, bat);
 
   hairline(g, 262);
   agentRow(g, v, 274);
@@ -504,28 +478,19 @@ void drawSegmentFace(U8G2& g, const ClockView& v) {
   const int slant = 8;
   const int spacing = 10;
   const int colonW = 14;
-  const int secW = 26;
-  const int secH = 52;
   const int top = 50;
-  const int groupWidth = digitW * 4 + spacing * 3 + colonW + 12 + (v.showSeconds ? 8 + secW * 2 + 6 + 4 : slant);
+  const int groupWidth = digitW * 4 + spacing * 3 + colonW + 12 + slant;
   int cursor = (kWidth - groupWidth) / 2;
   for (int index = 0; index < 4; ++index) {
     if (index == 2) {
       SegmentBox colonBox{cursor, top, colonW, digitH, thick, slant};
-      segmentColon(g, colonBox, !v.timeValid || (v.second % 2) == 0);
+      // Colon lit constantly: seconds no longer gate the redraw.
+      segmentColon(g, colonBox, true);
       cursor += colonW + 12;
     }
     SegmentBox box{cursor, top, digitW, digitH, thick, slant};
     segmentGlyph(g, box, digits[index], true);
     cursor += digitW + spacing;
-  }
-  if (v.showSeconds) {
-    char sec[3] = {'-', '-', 0};
-    if (v.timeValid) {
-      sec[0] = static_cast<char>('0' + v.second / 10);
-      sec[1] = static_cast<char>('0' + v.second % 10);
-    }
-    segmentString(g, cursor - spacing + 8, top + digitH - secH, secW, secH, 7, 4, 6, sec, true);
   }
 
   // Second LCD line: month.day on the left, temperature on the right.
@@ -599,12 +564,8 @@ void drawDotsFace(U8G2& g, const ClockView& v) {
   for (int index = 0; index < 5; ++index) {
     const char ch = hm[index];
     if (ch == ':') {
-      const bool on = !v.timeValid || (v.second % 2) == 0;
-      if (on) {
-        dotGlyph(g, ':', x, y, pitch, radius, 2, 1);
-      } else {
-        dotGlyph(g, ' ', x, y, pitch, radius, 2, 1);
-      }
+      // Colon lit constantly: seconds no longer gate the redraw.
+      dotGlyph(g, ':', x, y, pitch, radius, 2, 1);
       x += 3 * pitch;
       continue;
     }
@@ -614,24 +575,6 @@ void drawDotsFace(U8G2& g, const ClockView& v) {
   if (v.hour12 && v.timeValid) {
     drawDoto(g, DotoFontSize::Small, kWidth - 30, 34, isAfternoon(v.hour) ? "PM" : "AM");
   }
-
-  // Sixty-dot seconds rail.
-  const int railPitch = 6;
-  const int railX = (kWidth - 59 * railPitch) / 2;
-  const int railY = 146;
-  for (int s = 0; s < 60; ++s) {
-    const int cx = railX + s * railPitch;
-    if (v.timeValid && s <= v.second) {
-      g.drawDisc(cx, railY, 2);
-    } else if (s % 5 == 0) {
-      g.drawBox(cx - 1, railY - 1, 2, 2);
-    } else {
-      g.drawPixel(cx, railY);
-    }
-  }
-  char sec[8];
-  formatSeconds(v, sec, sizeof(sec));
-  drawDoto(g, DotoFontSize::Small, (kWidth - dotoWidth(DotoFontSize::Small, sec)) / 2, 156, sec);
 
   char date[32];
   if (v.timeValid) {
@@ -684,20 +627,13 @@ void drawAnalogFace(U8G2& g, const ClockView& v) {
   }
 
   if (v.timeValid) {
-    const ClockPoint hourEnd = clockHandPoint(cx, cy, 72, hourHandTurn(v.hour, v.minute, v.second));
-    const ClockPoint minuteEnd = clockHandPoint(cx, cy, 112, minuteHandTurn(v.minute, v.second));
+    // Hands step per minute: seconds no longer drive any redraw here.
+    const ClockPoint hourEnd = clockHandPoint(cx, cy, 72, hourHandTurn(v.hour, v.minute, 0));
+    const ClockPoint minuteEnd = clockHandPoint(cx, cy, 112, minuteHandTurn(v.minute, 0));
     taperedBar(g, static_cast<float>(cx), static_cast<float>(cy), static_cast<float>(hourEnd.x),
                static_cast<float>(hourEnd.y), 11.0f, 5.0f);
     taperedBar(g, static_cast<float>(cx), static_cast<float>(cy), static_cast<float>(minuteEnd.x),
                static_cast<float>(minuteEnd.y), 7.0f, 3.0f);
-    if (v.showSeconds) {
-      const float secondTurn = secondHandTurn(v.second);
-      const ClockPoint tip = clockHandPoint(cx, cy, 122, secondTurn);
-      const ClockPoint tail = clockHandPoint(cx, cy, 22, secondTurn + 0.5f);
-      g.drawLine(tail.x, tail.y, tip.x, tip.y);
-      const ClockPoint lolly = clockHandPoint(cx, cy, 96, secondTurn);
-      g.drawDisc(lolly.x, lolly.y, 4);
-    }
   }
   g.drawDisc(cx, cy, 7);
   paper(g);
@@ -721,9 +657,9 @@ void drawAnalogFace(U8G2& g, const ClockView& v) {
   g.drawHLine(px, 118, kWidth - px - 10);
   char digital[12];
   if (v.timeValid) {
-    snprintf(digital, sizeof(digital), "%02d:%02d:%02d", v.hour, v.minute, v.second);
+    snprintf(digital, sizeof(digital), "%02d:%02d", v.hour, v.minute);
   } else {
-    snprintf(digital, sizeof(digital), "--:--:--");
+    snprintf(digital, sizeof(digital), "--:--");
   }
   drawDoto(g, DotoFontSize::Medium, px, 128, clipDoto(DotoFontSize::Medium, digital, kWidth - px - 8).c_str());
   char climate[20];
@@ -766,7 +702,7 @@ void drawWordsFace(U8G2& g, const ClockView& v) {
   const int cellH = 24;
   const int gridX = (kWidth - cellW * kWordClockCols) / 2;
   const int gridY = 8;
-  g.setFont(u8g2_font_helvB14_tr);
+  g.setFont(u8g2_font_helvB18_tr);
   for (int row = 0; row < kWordClockRows; ++row) {
     for (int col = 0; col < kWordClockCols; ++col) {
       const char letter[2] = {wordClockLetter(row, col), 0};
@@ -830,17 +766,10 @@ void drawTerminalFace(U8G2& g, const ClockView& v, uint32_t tickMs) {
   formatHourMinute(v, hm, sizeof(hm));
   const int bigTop = 50;
   fontText(g, u8g2_font_inb63_mn, 10, bigTop, hm);
-  int x = 10 + fontWidth(g, u8g2_font_inb63_mn, hm);
-  if (v.showSeconds) {
-    char sec[4];
-    snprintf(sec, sizeof(sec), ":%s", v.timeValid ? "" : "--");
-    if (v.timeValid) {
-      snprintf(sec, sizeof(sec), ":%02d", v.second);
-    }
-    fontText(g, u8g2_font_inb33_mn, x + 2, bigTop + 63 - 33, sec);
-    x += 2 + fontWidth(g, u8g2_font_inb33_mn, sec);
-  }
-  const bool cursorOn = ((tickMs / 500) % 2) == 0;
+  const int x = 10 + fontWidth(g, u8g2_font_inb63_mn, hm);
+  (void)tickMs;
+  // Cursor lit constantly: blinking seconds no longer gate the redraw.
+  const bool cursorOn = true;
   if (cursorOn) {
     g.drawBox(x + 6, bigTop + 63 - 30, 16, 30);
   }
@@ -935,7 +864,9 @@ void drawPetFace(U8G2& g, const ClockView& v, uint32_t tickMs) {
   drawDoto(g, DotoFontSize::Medium, bubbleX + (bubbleW - dotoWidth(DotoFontSize::Medium, bubble.c_str())) / 2,
            bubbleY + 9, bubble.c_str());
 
-  const PetBitmapFrame& sprite = bitmapForMode(v.petMode, tickMs);
+  (void)tickMs;
+  // Static pose: animation ticks no longer gate the redraw.
+  const PetBitmapFrame& sprite = bitmapForMode(v.petMode, 0);
   const int scale = 2;
   const int spriteX = 44;
   const int spriteY = 76;
@@ -953,13 +884,6 @@ void drawPetFace(U8G2& g, const ClockView& v, uint32_t tickMs) {
   const int timeX = rightEdge - timeWidth;
   const int columnX = 232;
   drawDoto(g, DotoFontSize::Hero, timeX, 78, hm, 2);
-  if (v.showSeconds) {
-    char sec[8];
-    formatSeconds(v, sec, sizeof(sec));
-    const std::string label = std::string(":") + sec +
-                              (v.hour12 && v.timeValid ? (isAfternoon(v.hour) ? " PM" : " AM") : "");
-    drawDoto(g, DotoFontSize::Medium, rightEdge - dotoWidth(DotoFontSize::Medium, label.c_str()), 134, label.c_str());
-  }
   char date[24];
   formatDate(v, date, sizeof(date));
   const std::string dateText = clipDoto(DotoFontSize::Medium, date, rightEdge - columnX);

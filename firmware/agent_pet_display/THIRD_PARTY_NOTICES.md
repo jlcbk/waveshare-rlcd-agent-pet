@@ -2,6 +2,14 @@
 
 This firmware embeds small monochrome bitmap derivatives of open-source visual assets for the Waveshare RLCD display.
 
+## Inter
+
+- Source: https://github.com/rsms/inter (version 4.1)
+- License: SIL Open Font License 1.1
+- Local license text: `third_party/Inter/OFL.txt`
+
+`src/doto_font.cpp` contains generated 1-bit ASCII glyphs derived from Inter.
+
 ## Doto
 
 - Source: https://github.com/google/fonts/tree/main/ofl/doto
@@ -9,7 +17,7 @@ This firmware embeds small monochrome bitmap derivatives of open-source visual a
 - License: SIL Open Font License 1.1
 - Local license text: `third_party/Doto/OFL.txt`
 
-`src/doto_font.cpp` contains generated 1-bit ASCII glyph data derived from Doto for the large RLCD UI text.
+The original display font was derived from Doto; its license is retained here.
 
 ## GUGUGAGA Pet
 

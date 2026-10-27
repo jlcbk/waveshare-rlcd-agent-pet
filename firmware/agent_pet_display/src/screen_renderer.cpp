@@ -4,7 +4,6 @@
 #include <U8g2lib.h>
 
 #include <stdio.h>
-#include <string.h>
 #include <string>
 
 #include "ST7305_U8g2.h"
@@ -25,7 +24,7 @@ constexpr int kRlcdCsPin = 40;
 constexpr int kRlcdRstPin = 41;
 constexpr int kTopBarHeight = 24;
 constexpr int kFooterHeight = 28;
-constexpr int kLabelChipHeight = 9;
+constexpr int kLabelChipHeight = 11;
 constexpr int kUsagePanelX = 12;
 constexpr int kUsagePanelWidth = 376;
 constexpr int kUsageHeaderY = 34;
@@ -39,16 +38,6 @@ constexpr int kUsageBigCardGap = 8;
 
 ST7305_U8g2 gLcd(kRlcdSckPin, kRlcdMosiPin, kRlcdDcPin, kRlcdCsPin, kRlcdRstPin);
 U8G2* gU8g2 = nullptr;
-
-std::string clipText(const std::string& text, size_t maxChars) {
-  if (text.size() <= maxChars) {
-    return text;
-  }
-  if (maxChars <= 2) {
-    return text.substr(0, maxChars);
-  }
-  return text.substr(0, maxChars - 2) + "..";
-}
 
 std::string clipTextToPixelWidth(const std::string& text, int maxWidth) {
   if (!gU8g2 || maxWidth <= 0 || text.empty()) {
@@ -120,13 +109,14 @@ std::string heroStatusText(const DisplayState& display) {
 void drawLabelChip(int x, int y, int width, const char* label) {
   gU8g2->drawRBox(x, y, width, kLabelChipHeight, 3);
   gU8g2->setDrawColor(1);
-  gU8g2->setFont(u8g2_font_5x8_tf);
-  gU8g2->drawStr(x + 4, y + 1, label);
+  gU8g2->setFont(u8g2_font_helvB08_tr);
+  gU8g2->drawStr(x + 4, y + 1, clipTextToPixelWidth(label ? label : "", width - 8).c_str());
   gU8g2->setDrawColor(0);
 }
 
 int chipWidthForLabel(const char* label, int minWidth, int maxWidth) {
-  const int textWidth = static_cast<int>(strlen(label ? label : "")) * 5;
+  gU8g2->setFont(u8g2_font_helvB08_tr);
+  const int textWidth = gU8g2->getStrWidth(label ? label : "");
   int width = textWidth + 8;
   if (width < minWidth) {
     width = minWidth;
@@ -137,86 +127,70 @@ int chipWidthForLabel(const char* label, int minWidth, int maxWidth) {
   return width;
 }
 
-void drawMetricCard(const ScreenRect& rect, const char* label, const std::string& value) {
-  gU8g2->drawRFrame(rect.x, rect.y, rect.w, rect.h, 5);
-  drawLabelChip(rect.x + 8, rect.y + 5, chipWidthForLabel(label, 28, 42), label);
+void drawUsageMiniCard(int x, int y, int width, const char* label, const std::string& line1, const std::string& line2) {
+  gU8g2->drawRFrame(x, y, width, kUsageSmallCardHeight, 5);
+  drawLabelChip(x + 8, y + 4, chipWidthForLabel(label, 28, 64), label);
   drawDotoText(DotoFontSize::Medium,
-               rect.x + 72,
-               rect.y + 5,
-               clipDotoTextToPixelWidth(value, rect.w - 84, DotoFontSize::Medium));
-}
-
-void drawRightInfoCard(const ScreenRect& rect,
-                       const char* label,
-                       const std::string& line1,
-                       const std::string& line2) {
-  gU8g2->drawRFrame(rect.x, rect.y, rect.w, rect.h, 6);
-  drawLabelChip(rect.x + 8, rect.y + 6, 42, label);
-  // Long values (e.g. "WIFI -61dBm") drop to the small face instead of being clipped.
-  const bool fitsMedium = dotoTextWidth(DotoFontSize::Medium, line1.c_str()) <= rect.w - 20;
-  const DotoFontSize line1Size = fitsMedium ? DotoFontSize::Medium : DotoFontSize::Small;
-  drawDotoText(line1Size,
-               rect.x + 10,
-               rect.y + (fitsMedium ? 22 : 25),
-               clipDotoTextToPixelWidth(line1, rect.w - 20, line1Size));
+               x + 8,
+               y + 16,
+               clipDotoTextToPixelWidth(line1, width - 16, DotoFontSize::Medium));
   drawDotoText(DotoFontSize::Small,
-               rect.x + 10,
-               rect.y + 41,
-               clipDotoTextToPixelWidth(line2, rect.w - 20, DotoFontSize::Small));
+               x + 8,
+               y + 28,
+               clipDotoTextToPixelWidth(line2, width - 16, DotoFontSize::Small));
 }
 
-void drawQuotaCard(const ScreenRect& rect, const char* label, const std::string& value) {
+void drawUsageDetailCard(int y,
+                         const char* label,
+                         const std::string& value,
+                         const std::string& hint) {
+  gU8g2->drawRFrame(kUsageBigCardX, y, kUsageBigCardWidth, kUsageBigCardHeight, 6);
+  drawLabelChip(kUsageBigCardX + 8, y + 4, chipWidthForLabel(label, 34, 64), label);
+  drawDotoText(DotoFontSize::Medium,
+               kUsageBigCardX + 8,
+               y + 16,
+               clipDotoTextToPixelWidth(value, kUsageBigCardWidth - 16, DotoFontSize::Medium));
+  drawDotoText(DotoFontSize::Small,
+               kUsageBigCardX + 8,
+               y + 33,
+               clipDotoTextToPixelWidth(hint, kUsageBigCardWidth - 16, DotoFontSize::Small));
+}
+
+void drawOverviewMetric(const ScreenRect& rect, const std::string& label, const std::string& value) {
+  constexpr int valueOffset = 130;
+  gU8g2->setFont(u8g2_font_helvB12_tr);
+  gU8g2->drawStr(rect.x, rect.y + 9, clipTextToPixelWidth(label, valueOffset - 12).c_str());
+  gU8g2->setFont(u8g2_font_helvB24_tr);
+  const int available = rect.w - valueOffset;
+  if (gU8g2->getStrWidth(value.c_str()) > available) {
+    gU8g2->setFont(u8g2_font_helvB18_tr);
+  }
+  gU8g2->drawStr(rect.x + valueOffset, rect.y + 2, clipTextToPixelWidth(value, available).c_str());
+}
+
+void drawOverviewQuota(const ScreenRect& rect, const std::string& label, const std::string& value) {
   const QuotaUsage usage = parseQuotaUsage(value);
   const QuotaBarLayout bars = overviewQuotaBarLayout();
-
-  gU8g2->drawRFrame(rect.x, rect.y, rect.w, rect.h, 5);
-  drawLabelChip(rect.x + 8, rect.y + 4, chipWidthForLabel(label, 28, 42), label);
-  gU8g2->setFont(u8g2_font_t0_11b_tf);
-  char fiveHour[12];
-  char week[12];
-  snprintf(fiveHour, sizeof(fiveHour), "5H %s", usage.fiveHourPercent >= 0 ? String(usage.fiveHourPercent).c_str() : "--");
-  snprintf(week, sizeof(week), "WK %s", usage.weekPercent >= 0 ? String(usage.weekPercent).c_str() : "--");
-  gU8g2->drawStr(rect.x + 56, rect.y + 9, fiveHour);
-  gU8g2->drawRFrame(bars.fiveHourBar.x, bars.fiveHourBar.y, bars.fiveHourBar.w, bars.fiveHourBar.h, 2);
-  if (usage.fiveHourPercent > 0) {
-    const int width = ((bars.fiveHourBar.w - 2) * usage.fiveHourPercent) / 100;
-    gU8g2->drawRBox(bars.fiveHourBar.x + 1, bars.fiveHourBar.y + 1, width, bars.fiveHourBar.h - 2, 1);
+  gU8g2->setFont(u8g2_font_helvB12_tr);
+  gU8g2->drawStr(rect.x, rect.y + 5, clipTextToPixelWidth(label, 56).c_str());
+  const int values[] = {usage.fiveHourPercent, usage.weekPercent};
+  const char* names[] = {"5H", "WK"};
+  const ScreenRect barRects[] = {bars.fiveHourBar, bars.weekBar};
+  for (int index = 0; index < 2; ++index) {
+    char text[24];
+    if (values[index] < 0) {
+      snprintf(text, sizeof(text), "%s --", names[index]);
+    } else {
+      snprintf(text, sizeof(text), "%s %d%%", names[index], values[index]);
+    }
+    const ScreenRect& bar = barRects[index];
+    gU8g2->drawStr(bar.x, rect.y + 5, clipTextToPixelWidth(text, bar.w).c_str());
+    gU8g2->drawFrame(bar.x, bar.y, bar.w, bar.h);
+    if (values[index] > 0) {
+      const int percent = values[index] > 100 ? 100 : values[index];
+      gU8g2->drawBox(bar.x + 1, bar.y + 1, ((bar.w - 2) * percent) / 100, bar.h - 2);
+    }
   }
-
-  gU8g2->drawStr(rect.x + 56, rect.y + 18, week);
-  gU8g2->drawRFrame(bars.weekBar.x, bars.weekBar.y, bars.weekBar.w, bars.weekBar.h, 2);
-  if (usage.weekPercent > 0) {
-    const int width = ((bars.weekBar.w - 2) * usage.weekPercent) / 100;
-    gU8g2->drawRBox(bars.weekBar.x + 1, bars.weekBar.y + 1, width, bars.weekBar.h - 2, 1);
-  }
-}
-
-void drawTimeCard(const DisplayState& display) {
-  const ScreenRect rect = overviewTimeCardRect();
-  gU8g2->drawRFrame(rect.x, rect.y, rect.w, rect.h, 6);
-  drawLabelChip(rect.x + 10, rect.y + 5, 30, "TIME");
-  drawDotoText(DotoFontSize::Hero,
-               rect.x + 12,
-               rect.y + 17,
-               clipDotoTextToPixelWidth(display.sidebarTime, rect.w - 24, DotoFontSize::Hero));
-  drawDotoText(DotoFontSize::Small,
-               rect.x + 12,
-               rect.y + 41,
-               clipDotoTextToPixelWidth(display.sidebarDate, rect.w - 24, DotoFontSize::Small));
-}
-
-void drawStatusCard(const DisplayState& display) {
-  const ScreenRect rect = overviewStatusCardRect();
-  gU8g2->drawRFrame(rect.x, rect.y, rect.w, rect.h, 6);
-  drawLabelChip(rect.x + 10, rect.y + 6, 42, "STATE");
-  drawDotoText(DotoFontSize::Hero,
-               rect.x + 10,
-               rect.y + 21,
-               clipDotoTextToPixelWidth(heroStatusText(display), rect.w - 20, DotoFontSize::Hero));
-  drawDotoText(DotoFontSize::Small,
-               rect.x + 10,
-               rect.y + 52,
-               clipDotoTextToPixelWidth(display.taskLine, rect.w - 20, DotoFontSize::Small));
 }
 
 void drawPetBitmap(const PetBitmapFrame& frame, int x, int y) {
@@ -234,33 +208,9 @@ void drawPetBitmap(const PetBitmapFrame& frame, int x, int y) {
   }
 }
 
-void drawUsageMiniCard(int x, int y, int width, const char* label, const std::string& line1, const std::string& line2) {
-  gU8g2->drawRFrame(x, y, width, kUsageSmallCardHeight, 5);
-  drawLabelChip(x + 8, y + 6, chipWidthForLabel(label, 28, 44), label);
-  drawDotoText(DotoFontSize::Medium,
-               x + 8,
-               y + 16,
-               clipDotoTextToPixelWidth(line1, width - 16, DotoFontSize::Medium));
-  gU8g2->setFont(u8g2_font_t0_11b_tf);
-  gU8g2->drawStr(x + 8, y + 28, clipText(line2, 20).c_str());
-}
-
-void drawUsageDetailCard(int y,
-                         const char* label,
-                         const std::string& value,
-                         const std::string& hint) {
-  gU8g2->drawRFrame(kUsageBigCardX, y, kUsageBigCardWidth, kUsageBigCardHeight, 6);
-  drawLabelChip(kUsageBigCardX + 8, y + 6, chipWidthForLabel(label, 34, 56), label);
-  drawDotoText(DotoFontSize::Medium,
-               kUsageBigCardX + 8,
-               y + 16,
-               clipDotoTextToPixelWidth(value, kUsageBigCardWidth - 16, DotoFontSize::Medium));
-  gU8g2->setFont(u8g2_font_t0_11b_tf);
-  gU8g2->drawStr(kUsageBigCardX + 8, y + 32, clipText(hint, 40).c_str());
-}
-
-void drawPet(const DisplayState& display, uint32_t tick) {
-  const PetBitmapFrame& sprite = bitmapForMode(display.petMode, tick);
+// Static pose: one frame per pet state, no timed A/B animation.
+void drawPet(const DisplayState& display) {
+  const PetBitmapFrame& sprite = bitmapForMode(display.petMode, 0);
   const ScreenRect rect = overviewPetPanelRect();
   gU8g2->drawRFrame(rect.x, rect.y, rect.w, rect.h, 8);
   gU8g2->drawRFrame(rect.x + 5, rect.y + 5, rect.w - 10, 14, 4);
@@ -269,33 +219,68 @@ void drawPet(const DisplayState& display, uint32_t tick) {
                rect.y + 7,
                clipDotoTextToPixelWidth(display.buddyBubble, rect.w - 20, DotoFontSize::Small));
   const int spriteX = rect.x + (rect.w - sprite.width) / 2;
-  const int spriteY = rect.y + 24;
+  const int spriteY = rect.y + 26;
   drawPetBitmap(sprite, spriteX, spriteY);
 }
 
-void renderOverviewPage(const DisplayState& display, const PowerState& power) {
-  (void)power;
+void renderOverviewPage(const DisplayState& display, const std::string& battery) {
+  const ScreenRect time = overviewTimeCardRect();
+  const ScreenRect status = overviewStatusCardRect();
+  gU8g2->setFont(u8g2_font_helvB12_tr);
+  const std::string batteryText = clipTextToPixelWidth(battery, 160);
+  const int batteryX = 388 - gU8g2->getStrWidth(batteryText.c_str());
+  gU8g2->drawStr(12, 5, clipTextToPixelWidth(display.networkLine, 110).c_str());
+  gU8g2->drawStr(132, 5, clipTextToPixelWidth(display.sidebarClimate, batteryX - 140).c_str());
+  gU8g2->drawStr(batteryX, 5, batteryText.c_str());
+  gU8g2->drawHLine(12, 24, 376);
 
-  drawTimeCard(display);
-  drawStatusCard(display);
-  drawMetricCard(overviewMetricCardRect(0), display.sidebarTokensLabel.c_str(), display.sidebarTokens);
-  drawMetricCard(overviewMetricCardRect(1), display.sidebarContextLabel.c_str(), display.sidebarContext);
+  gU8g2->setFont(u8g2_font_logisoso42_tn);
+  gU8g2->drawStr(time.x, time.y, clipTextToPixelWidth(display.sidebarTime, 230).c_str());
+  gU8g2->setFont(u8g2_font_helvB12_tr);
+  const std::string date = clipTextToPixelWidth(display.sidebarDate, 130);
+  const std::string focus = clipTextToPixelWidth(display.focusLabel, 130);
+  gU8g2->drawStr(time.x + time.w - gU8g2->getStrWidth(date.c_str()), time.y + 3, date.c_str());
+  gU8g2->drawStr(time.x + time.w - gU8g2->getStrWidth(focus.c_str()), time.y + 23, focus.c_str());
+  gU8g2->drawHLine(12, 82, 376);
+
+  const std::string source = clipTextToPixelWidth(display.sourceLabel, 200);
+  const std::string bridge = clipTextToPixelWidth(display.bridgeLine, 150);
+  gU8g2->drawStr(status.x, status.y, source.c_str());
+  gU8g2->drawStr(status.x + status.w - gU8g2->getStrWidth(bridge.c_str()), status.y, bridge.c_str());
+  gU8g2->setFont(u8g2_font_helvB24_tr);
+  gU8g2->drawStr(status.x, status.y + 16,
+                 clipTextToPixelWidth(heroStatusText(display), status.w).c_str());
+  gU8g2->setFont(u8g2_font_helvB12_tr);
+  gU8g2->drawStr(status.x, status.y + 48,
+                 clipTextToPixelWidth(display.taskLine, status.w).c_str());
+  gU8g2->drawHLine(12, 153, 376);
+
+  drawOverviewMetric(overviewMetricCardRect(0), display.sidebarTokensLabel, display.sidebarTokens);
+  drawOverviewMetric(overviewMetricCardRect(1), display.sidebarContextLabel, display.sidebarContext);
   if (display.sidebarQuotaStyle == "quota") {
-    drawQuotaCard(overviewMetricCardRect(2), display.sidebarQuotaLabel.c_str(), display.sidebarQuota);
+    drawOverviewQuota(overviewMetricCardRect(2), display.sidebarQuotaLabel, display.sidebarQuota);
   } else {
-    drawMetricCard(overviewMetricCardRect(2), display.sidebarQuotaLabel.c_str(), display.sidebarQuota);
+    drawOverviewMetric(overviewMetricCardRect(2), display.sidebarQuotaLabel, display.sidebarQuota);
   }
-  drawRightInfoCard(overviewRightInfoCardRect(0), "AGENT", display.sourceLabel, heroStatusText(display));
-  drawRightInfoCard(overviewRightInfoCardRect(1), "BOARD", display.networkLine, display.bridgeLine);
-  drawPet(display, millis());
+  drawPet(display);
+  gU8g2->drawHLine(12, 272, 376);
+  gU8g2->setFont(u8g2_font_helvB10_tr);
+  gU8g2->drawStr(12, 280, clipTextToPixelWidth(display.footerMessage, 310).c_str());
+  char pageLabel[16];
+  snprintf(pageLabel, sizeof(pageLabel), "P%d/%d", screenPageNumber(display.page), kScreenPageCount);
+  gU8g2->drawStr(388 - gU8g2->getStrWidth(pageLabel), 280, pageLabel);
 }
 
 void renderUsagePage(const DisplayState& display) {
   drawDotoText(DotoFontSize::Medium, kUsagePanelX, kUsageHeaderY - 2, "USAGE DETAILS");
+  // Place the agent label right of the heading (measured, not hardcoded: the
+  // proportional Inter advances differ from the old monospaced Doto cells).
+  const int headingWidth = dotoTextWidth(DotoFontSize::Medium, "USAGE DETAILS");
+  const int agentX = kUsagePanelX + headingWidth + 8;
   drawDotoText(DotoFontSize::Small,
-               kUsagePanelX + 144,
+               agentX,
                kUsageHeaderY + 1,
-               clipDotoTextToPixelWidth(display.sidebarAgent, kUsagePanelWidth - 150, DotoFontSize::Small));
+               clipDotoTextToPixelWidth(display.sidebarAgent, kUsagePanelX + kUsagePanelWidth - agentX, DotoFontSize::Small));
 
   drawUsageMiniCard(kUsagePanelX, kUsageSmallCardY, kUsageSmallCardWidth, "TIME", display.sidebarTime, display.sidebarDate);
   drawUsageMiniCard(kUsagePanelX + kUsageSmallCardWidth + 12,
@@ -358,7 +343,7 @@ void ScreenRenderer::begin() {
   gLcd.begin(0, U8G2_R1);
   gU8g2 = gLcd.getU8g2();
   gU8g2->setFontPosTop();
-  gU8g2->setFont(u8g2_font_t0_11b_tf);
+  gU8g2->setFont(u8g2_font_t0_16b_tr);
 }
 
 U8G2* ScreenRenderer::u8g2() {
@@ -386,10 +371,12 @@ void ScreenRenderer::render(const DisplayState& display, const PowerState& power
   }
 
   char battery[32];
+  // Integer percent only: the 0.01 V readout made ADC noise flip the text on
+  // every sample while the battery icon state already carries the detail.
   if (display.showBatteryDetail && power.lowBattery) {
-    snprintf(battery, sizeof(battery), "%d%% LOW %.2fV", power.percent, power.voltageMv / 1000.0f);
+    snprintf(battery, sizeof(battery), "%d%% LOW", power.percent);
   } else if (display.showBatteryDetail && power.charging) {
-    snprintf(battery, sizeof(battery), "%d%% CHG %.2fV", power.percent, power.voltageMv / 1000.0f);
+    snprintf(battery, sizeof(battery), "%d%% CHG", power.percent);
   } else {
     snprintf(battery, sizeof(battery), "%d%%", power.percent);
   }
@@ -398,6 +385,12 @@ void ScreenRenderer::render(const DisplayState& display, const PowerState& power
   gU8g2->setDrawColor(1);
   gU8g2->drawBox(0, 0, kLcdWidth, kLcdHeight);
   gU8g2->setDrawColor(0);
+  gU8g2->setFontPosTop();
+  if (display.page != ScreenPage::Usage) {
+    renderOverviewPage(display, battery);
+    flushIfChanged();
+    return;
+  }
   gU8g2->drawFrame(0, 0, kLcdWidth, kLcdHeight);
   gU8g2->drawHLine(8, kTopBarHeight, kLcdWidth - 16);
 
@@ -414,11 +407,7 @@ void ScreenRenderer::render(const DisplayState& display, const PowerState& power
                clipDotoTextToPixelWidth(display.sourceLabel, sourceWidth, DotoFontSize::Small));
   drawDotoText(DotoFontSize::Small, batteryX, 5, battery);
 
-  if (display.page == ScreenPage::Usage) {
-    renderUsagePage(display);
-  } else {
-    renderOverviewPage(display, power);
-  }
+  renderUsagePage(display);
 
   const int footerY = kLcdHeight - kFooterHeight;
   const char* footerLabel = display.page == ScreenPage::Usage ? "KEYS" : "LIVE";
