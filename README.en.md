@@ -1,6 +1,6 @@
 # waveshare-rlcd-agent-pet
 
-English · [中文](README.zh-CN.md)
+English · [中文](README.md)
 
 A desk companion on the Waveshare `ESP32-S3-RLCD-4.2` reflective LCD. It shows
 what your coding agents are doing (Codex, Claude Code, Hermes, OpenClaw). It is

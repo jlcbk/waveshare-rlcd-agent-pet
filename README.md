@@ -1,6 +1,6 @@
 # waveshare-rlcd-agent-pet
 
-[English](README.md) · 中文
+[English](README.en.md) · 中文
 
 一块放在桌上的反射式屏幕（Waveshare `ESP32-S3-RLCD-4.2`），用来显示你的编程智能体在做什么：Codex、Claude Code、Hermes、OpenClaw。它同时是一块时钟，显示电量和室内温湿度，还藏了一个能播放 1-bit 视频的彩蛋。Mac 上有一个小小的 bridge 负责收集状态，另有网页控制台和菜单栏 App 用来查看和控制。
 
