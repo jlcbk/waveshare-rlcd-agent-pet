@@ -41,3 +41,26 @@ static constexpr uint32_t kRenderIntervalMs = 10000;
 static constexpr uint32_t kPmArmDelayMs = 45000;
 static constexpr uint32_t kSettingsSaveDelayMs = 2000;
 static constexpr int kChargeSensePin = -1;
+// Low-battery protection: 10 consecutive *valid* samples strictly below
+// 3.60 V (5 s apart -> ~50 s low) enter a 600 s deep-sleep cycle. Strictly
+// below: 3.60 V itself counts as recovered. Invalid samples reset the count.
+static constexpr int kBatteryProtectionThresholdMv = 3600;
+static constexpr int kBatteryProtectionConsecutive = 10;
+static constexpr uint32_t kBatteryProtectionSleepS = 600;
+// Recovery needs MORE than the entry threshold so a resting (load-free)
+// cell cannot bounce straight back into the awake path it just collapsed
+// from: two fresh valid readings at/above this, about 1 s apart, confirm
+// the voltage has recovered; they do not detect a charge source. The extra
+// awake second happens only inside the
+// existing 600 s protection wake cycle.
+static constexpr int kBatteryRecoveryThresholdMv = 3750;
+// ADC noise sits around ±20 mV while the panel update costs a full frame
+// write; the voltage shown on screen only moves when it drifts this far, so
+// jitter cannot force a redraw every 5 s sample.
+static constexpr int kBatteryDisplayDeadbandMv = 20;
+// LCD wiring on this board (see screen_renderer.cpp / schematic).
+static constexpr int kLcdSckPin = 11;
+static constexpr int kLcdMosiPin = 12;
+static constexpr int kLcdDcPin = 5;
+static constexpr int kLcdCsPin = 40;
+static constexpr int kLcdRstPin = 41;

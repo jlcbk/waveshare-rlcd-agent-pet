@@ -136,6 +136,17 @@ struct ClockAgentLine {
 
 static constexpr int kClockAgentLines = 3;
 
+// Structured Wi-Fi status for the Overview/Usage top-bar icon. The bar icon
+// (not the legacy "WIFI n/4" strings, which the clock page and footer keep
+// using) is driven from these fields.
+enum class WifiIconState {
+  Unknown,          // network not surveyed yet (legacy "WIFI --")
+  Connecting,       // association in progress (legacy "WIFI TRY")
+  Off,              // known but disconnected (legacy "WIFI OFF")
+  ConnectedNoRssi,  // associated, RSSI not in yet (legacy "WIFI OK")
+  Connected,        // associated with RSSI; see wifiIconLevel 1..4
+};
+
 // Everything a clock face needs, already formatted and bounded.
 struct ClockView {
   ClockStyle style{ClockStyle::Sans};
@@ -200,6 +211,11 @@ struct DisplayState {
   std::string linkLabel{"WIFI --"};
   std::string networkLine{"WIFI --"};
   std::string bridgeLine{"BRIDGE --"};
+  // Icon fields for the Overview/Usage top bar; filled by deriveDisplayState
+  // from NetworkState via the shared rssiBars() thresholds. level 0 = no
+  // signal bars, 1..4 = rssiBars() bucket for a connected RSSI.
+  WifiIconState wifiIconState{WifiIconState::Unknown};
+  int wifiIconLevel{0};
   ClockView clock{};
 };
 

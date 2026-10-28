@@ -2,6 +2,7 @@
 
 # PlatformIO
 .pio/
+firmware/agent_pet_display/tools/host_render/out/
 
 # Node
 node_modules/

@@ -4,6 +4,7 @@
 
 #include "app_config.h"
 #include "battery_monitor.h"
+#include "battery_protection.h"
 #include "bridge_client.h"
 #include "button_actions.h"
 #include "device_settings.h"
@@ -11,6 +12,7 @@
 #include "environment_monitor.h"
 #include "firmware_version.h"
 #include "focus_controller.h"
+#include "low_battery_guard.h"
 #include "models.h"
 #include "net_worker.h"
 #include "pet_state_machine.h"
@@ -50,6 +52,11 @@ uint32_t gEggRequest = 0;       // counter sent to the bridge
 uint32_t gEggRequestedAt = 0;   // waiting for the bridge to answer
 uint32_t gLastEggRev = 0;       // last egg command we started
 bool gEggWasActive = false;
+
+LowBatteryGuard gLowBatGuard;
+// Voltage currently shown on the panel (hysteresis-filtered, see
+// sampleSensors): 0 until the first valid sample.
+int gShownVoltageMv = 0;
 
 void markSettingsDirty(uint32_t now) {
   gSettingsDirty = true;
@@ -154,6 +161,25 @@ void readButtons(uint32_t now) {
   handleAction(keyAction, now);
 }
 
+// Ten consecutive valid samples strictly below 3.60 V (~50 s at 5 s per
+// sample): put the notice on the panel, then deep sleep for 600 s at a time.
+// Never returns (esp_deep_sleep_start); a reset or power cycle is the only
+// way out besides a recovered battery.
+void enterBatteryProtection() {
+  Serial.printf("[BAT-PROT] %d consecutive valid samples < %dmV: protecting\n",
+                gLowBatGuard.consecutiveLow(), LowBatteryGuard::kThresholdMv);
+  if (eggActive()) {
+    eggStop();  // the 240 MHz show must not straddle the sleep entry
+  }
+  netWorkerSetFastPoll(false);
+  pmPrepareDeepSleep();  // auto light sleep off: nothing may race the entry
+  // Notice last: low battery, deep sleep and the raw reading (not the
+  // deadband-filtered value the top bar shows).
+  gRenderer.renderLowBatteryNotice(gPower);
+  delay(200);  // let the SPI frame transfer finish before the power domains drop
+  batteryProtectionEnterDeepSleep();  // holds LCD pads, arms the 600 s RTC timer
+}
+
 void sampleSensors(uint32_t now) {
   if (gLastClockSample == 0 || now - gLastClockSample >= kClockSampleMs) {
     // Round 3: no page shows seconds any more, so redraw on minute changes
@@ -182,11 +208,29 @@ void sampleSensors(uint32_t now) {
   if (gLastBatterySample == 0 || now - gLastBatterySample >= kBatterySampleMs) {
     const PowerState prevPower = gPower;
     gPower = samplePowerState(false);
-    if (gPower.percent != prevPower.percent || gPower.lowBattery != prevPower.lowBattery ||
-        gPower.charging != prevPower.charging) {
+    // Display hysteresis: the panel shows the last value that crossed
+    // kBatteryDisplayDeadbandMv, so ADC noise around a 0.01 V step cannot
+    // force a redraw every 5 s sample. Telemetry and the guard use the raw
+    // reading; displayed voltage and percent follow this filtered value.
+    const int shownBefore = gShownVoltageMv;
+    const int deltaMv = gPower.voltageMv > shownBefore ? gPower.voltageMv - shownBefore
+                                                       : shownBefore - gPower.voltageMv;
+    if (!(gPower.sampleOk && shownBefore > 0 && deltaMv < kBatteryDisplayDeadbandMv)) {
+      gShownVoltageMv = gPower.voltageMv;  // crossing, first value, or invalid (0)
+    }
+    // No raw-percent comparison here on purpose: the displayed percent now
+    // derives from gShownVoltageMv, so it changes exactly when this value
+    // does, and raw curve steps inside the deadband redraw nothing.
+    if (gPower.lowBattery != prevPower.lowBattery || gPower.charging != prevPower.charging ||
+        gShownVoltageMv != shownBefore) {
       gForceRender = true;
     }
     gLastBatterySample = now;
+    // Protection counts raw valid samples only: invalid ones reset it above
+    // (feed()), so a dead sensor can never be read as an empty battery.
+    if (gLowBatGuard.feed(gPower.sampleOk, gPower.voltageMv) == LowBatteryAction::EnterProtection) {
+      enterBatteryProtection();  // does not return
+    }
   }
   // SNTP sets the system clock asynchronously; mirror it into the RTC now and then.
   if (systemClockPlausible() && (!gRtcWrittenThisBoot || now - gLastRtcWrite >= kRtcResyncMs)) {
@@ -356,9 +400,18 @@ void AppController::tick() {
   }
 
   if (gForceRender || now - gLastRender >= kRenderIntervalMs) {
-    const DisplayState view =
-        deriveDisplayState(gAgent, gPower, gEnvironment, gSettings.page, gNetwork, gSettings.display);
-    gRenderer.render(view, gPower);
+    // Everything drawn derives from the hysteresis-filtered voltage: the
+    // nonlinear percent curve amplifies small ADC steps, so the percent on
+    // both top bars and the clock page must follow the same 20 mV deadband
+    // as the voltage string, or every 5 s sample / 10 s fallback render
+    // would repaint a percent that only wobbles. Raw values keep driving
+    // telemetry and the protection guard untouched.
+    PowerState displayPower = gPower;
+    displayPower.voltageMv = gShownVoltageMv;
+    displayPower.percent = gPower.sampleOk ? mapBatteryPercent(gShownVoltageMv) : gPower.percent;
+    const DisplayState view = deriveDisplayState(gAgent, displayPower, gEnvironment, gSettings.page,
+                                                 gNetwork, gSettings.display);
+    gRenderer.render(view, displayPower);
     gLastRender = now;
     gForceRender = false;
   }

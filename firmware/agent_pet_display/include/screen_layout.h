@@ -15,5 +15,4 @@ struct QuotaBarLayout {
 ScreenRect overviewTimeCardRect();
 ScreenRect overviewStatusCardRect();
 ScreenRect overviewMetricCardRect(int index);
-ScreenRect overviewPetPanelRect();
 QuotaBarLayout overviewQuotaBarLayout();

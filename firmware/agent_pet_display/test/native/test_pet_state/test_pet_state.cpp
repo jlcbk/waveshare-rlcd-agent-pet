@@ -98,6 +98,50 @@ void test_usage_page_keeps_usage_values_and_marks_page(void) {
   TEST_ASSERT_EQUAL_STRING("BOOT page  HOLD/KEY agent", view.footerMessage.c_str());
 }
 
+// The display state carries the bridge's exact protocol text ("49M tok"):
+// the token unit expands only at the Overview draw site (see test_usage_visuals),
+// so the Usage page keeps the original spelling.
+void test_today_value_keeps_protocol_spelling(void) {
+  AgentState agent{};
+  agent.connected = true;
+  agent.usageToday = "49M tok";
+  agent.usageContext = "66.9k tok / 258k tok";
+  agent.usageQuota = "5H 88% WK 92%";
+  const PowerState power{4010, 82, false, false, true};
+  const EnvironmentState environment{};
+
+  const DisplayState view = deriveDisplayState(agent, power, environment, ScreenPage::Overview);
+
+  TEST_ASSERT_EQUAL_STRING("49M tok", view.sidebarTokens.c_str());
+  TEST_ASSERT_EQUAL_STRING("66.9k tok / 258k tok", view.sidebarContext.c_str());
+  TEST_ASSERT_EQUAL_STRING("5H 88% WK 92%", view.sidebarQuota.c_str());
+}
+
+void test_today_values_without_trailing_tok_stay_untouched(void) {
+  AgentState agent{};
+  agent.connected = true;
+  const PowerState power{4010, 82, false, false, true};
+  const EnvironmentState environment{};
+
+  agent.usageToday = "49M";
+  const DisplayState unitless = deriveDisplayState(agent, power, environment, ScreenPage::Overview);
+  TEST_ASSERT_EQUAL_STRING("49M", unitless.sidebarTokens.c_str());
+
+  agent.usageToday = "12%";
+  const DisplayState percent = deriveDisplayState(agent, power, environment, ScreenPage::Overview);
+  TEST_ASSERT_EQUAL_STRING("12%", percent.sidebarTokens.c_str());
+
+  // "tok" not at the end (e.g. a rate) must not be rewritten either.
+  agent.usageToday = "49M tok/min";
+  const DisplayState rate = deriveDisplayState(agent, power, environment, ScreenPage::Overview);
+  TEST_ASSERT_EQUAL_STRING("49M tok/min", rate.sidebarTokens.c_str());
+
+  // Empty Today falls back to the "--" placeholder, as before.
+  agent.usageToday = "";
+  const DisplayState empty = deriveDisplayState(agent, power, environment, ScreenPage::Overview);
+  TEST_ASSERT_EQUAL_STRING("--", empty.sidebarTokens.c_str());
+}
+
 void test_searching_detail_gets_own_screen_label(void) {
   AgentState agent{};
   agent.source = SourceKind::Codex;
@@ -234,6 +278,73 @@ void test_wifi_reconnecting_gets_distinct_status_from_bridge_offline(void) {
   TEST_ASSERT_EQUAL_STRING("WiFi reconnecting", view.footerMessage.c_str());
 }
 
+// The Overview/Usage top-bar icon is driven by the structured wifiIconState/
+// wifiIconLevel fields, so every NetworkState must map to one icon state, and
+// non-connected states must carry level 0 (no arcs).
+void test_wifi_icon_state_maps_every_network_state(void) {
+  const AgentState agent{};
+  const PowerState power{4010, 82, false, false, true};
+  const EnvironmentState environment{};
+
+  // unknown: nothing surveyed yet
+  const DisplayState unknown = deriveDisplayState(agent, power, environment, ScreenPage::Overview, NetworkState{});
+  TEST_ASSERT_EQUAL(static_cast<int>(WifiIconState::Unknown), static_cast<int>(unknown.wifiIconState));
+  TEST_ASSERT_EQUAL(0, unknown.wifiIconLevel);
+
+  // connecting: known, association in progress
+  NetworkState connecting{};
+  connecting.wifiKnown = true;
+  connecting.wifiConnecting = true;
+  const DisplayState trying = deriveDisplayState(agent, power, environment, ScreenPage::Overview, connecting);
+  TEST_ASSERT_EQUAL(static_cast<int>(WifiIconState::Connecting), static_cast<int>(trying.wifiIconState));
+  TEST_ASSERT_EQUAL(0, trying.wifiIconLevel);
+
+  // off: known but disconnected
+  NetworkState off{};
+  off.wifiKnown = true;
+  const DisplayState offline = deriveDisplayState(agent, power, environment, ScreenPage::Overview, off);
+  TEST_ASSERT_EQUAL(static_cast<int>(WifiIconState::Off), static_cast<int>(offline.wifiIconState));
+  TEST_ASSERT_EQUAL(0, offline.wifiIconLevel);
+
+  // connected but no RSSI yet (rssi == 0)
+  NetworkState ok{};
+  ok.wifiKnown = true;
+  ok.wifiConnected = true;
+  const DisplayState linked = deriveDisplayState(agent, power, environment, ScreenPage::Overview, ok);
+  TEST_ASSERT_EQUAL(static_cast<int>(WifiIconState::ConnectedNoRssi), static_cast<int>(linked.wifiIconState));
+  TEST_ASSERT_EQUAL(0, linked.wifiIconLevel);
+
+  // connected with RSSI: Connected + a 1..4 level, on both icon pages
+  NetworkState linkedRssi{};
+  linkedRssi.wifiKnown = true;
+  linkedRssi.wifiConnected = true;
+  linkedRssi.rssi = -70;
+  const DisplayState usage = deriveDisplayState(agent, power, environment, ScreenPage::Usage, linkedRssi);
+  TEST_ASSERT_EQUAL(static_cast<int>(WifiIconState::Connected), static_cast<int>(usage.wifiIconState));
+  TEST_ASSERT_EQUAL(2, usage.wifiIconLevel);
+}
+
+// Level buckets must come from the same rssiBars() thresholds as the legacy
+// "WIFI n/4" text (-55/-66/-77 dBm), including the exact boundaries.
+void test_wifi_icon_level_reuses_rssi_bars_thresholds(void) {
+  const AgentState agent{};
+  const PowerState power{4010, 82, false, false, true};
+  const EnvironmentState environment{};
+
+  const int rssiValues[] = {-50, -55, -56, -60, -66, -67, -77, -78, -85};
+  const int expectedLevels[] = {4, 4, 3, 3, 3, 2, 2, 1, 1};
+  const size_t count = sizeof(rssiValues) / sizeof(rssiValues[0]);
+  for (size_t index = 0; index < count; ++index) {
+    NetworkState network{};
+    network.wifiKnown = true;
+    network.wifiConnected = true;
+    network.rssi = rssiValues[index];
+    const DisplayState view = deriveDisplayState(agent, power, environment, ScreenPage::Overview, network);
+    TEST_ASSERT_EQUAL(static_cast<int>(WifiIconState::Connected), static_cast<int>(view.wifiIconState));
+    TEST_ASSERT_EQUAL_MESSAGE(expectedLevels[index], view.wifiIconLevel, "RSSI bucket mismatch");
+  }
+}
+
 
 void test_clock_view_carries_time_settings_and_agents(void) {
   AgentState agent{};
@@ -322,6 +433,8 @@ int main(void) {
   RUN_TEST(test_running_details_drive_distinct_pet_modes);
   RUN_TEST(test_low_battery_biases_pet_to_tired);
   RUN_TEST(test_usage_page_keeps_usage_values_and_marks_page);
+  RUN_TEST(test_today_value_keeps_protocol_spelling);
+  RUN_TEST(test_today_values_without_trailing_tok_stay_untouched);
   RUN_TEST(test_searching_detail_gets_own_screen_label);
   RUN_TEST(test_openclaw_source_gets_own_label);
   RUN_TEST(test_dynamic_usage_labels_flow_into_display_state);
@@ -329,6 +442,8 @@ int main(void) {
   RUN_TEST(test_invalid_pinned_focus_falls_back_to_auto_label);
   RUN_TEST(test_wifi_connected_bridge_offline_gets_clear_footer);
   RUN_TEST(test_wifi_reconnecting_gets_distinct_status_from_bridge_offline);
+  RUN_TEST(test_wifi_icon_state_maps_every_network_state);
+  RUN_TEST(test_wifi_icon_level_reuses_rssi_bars_thresholds);
   RUN_TEST(test_clock_view_carries_time_settings_and_agents);
   RUN_TEST(test_clock_pet_sleeps_at_night_when_nothing_runs);
   RUN_TEST(test_clock_view_without_bridge_or_time);

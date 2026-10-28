@@ -35,3 +35,13 @@ QuotaUsage parseQuotaUsage(const std::string& text) {
   usage.weekPercent = parsePercentAfterToken(text, "WK");
   return usage;
 }
+
+std::string expandTodayTokenUnit(const std::string& value) {
+  static constexpr const char* kSuffix = " tok";
+  static constexpr size_t kSuffixLen = 4;
+  if (value.size() > kSuffixLen &&
+      value.compare(value.size() - kSuffixLen, kSuffixLen, kSuffix) == 0) {
+    return value.substr(0, value.size() - kSuffixLen) + " Token";
+  }
+  return value;
+}

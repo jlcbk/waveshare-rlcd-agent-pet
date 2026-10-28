@@ -45,6 +45,10 @@ void pmEggPerformanceOff();
 // for BOOT and KEY, so a press resumes the loop promptly.
 void pmSetupButtonWakeup(int bootPin, int keyPin);
 
+// Before a deliberate deep sleep (low-battery protection): turns auto light
+// sleep off so no idle sleep can race the sleep entry.
+void pmPrepareDeepSleep();
+
 // Called from the main loop: samples the awake stats and logs one evidence
 // line per window (kPmStatsWindowMs). Low rate on purpose: heavy logging
 // itself keeps the USB console and CPU awake.

@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "battery_monitor.h"
 #include "egg_builtin.h"
 #include "host_frame.h"
 #include "models.h"
@@ -80,6 +81,22 @@ PowerState battery(int percent, int mv) {
 
 std::vector<Scene> buildScenes() {
   std::vector<Scene> scenes;
+  // Full-width metric cards + top-bar voltage: Today reads "49M tok", which
+  // the Overview page expands to "49M Token" at draw time; 4095 mV renders
+  // as "4.09V".
+  AgentState fullWidth = codexAgent("thinking", AgentStatus::Running);
+  fullWidth.usageToday = "49M tok";
+  fullWidth.usageContext = "189k / 258k";
+  scenes.push_back({"overview-full-width-voltage", fullWidth, battery(87, 4095),
+                    sampleEnvironment(), onlineNetwork(), ScreenPage::Overview, 1000});
+  // Failed/un-calibrated ADC read: the top bar must show "--%", never
+  // "0% LOW" (a dead sensor is not an empty battery).
+  PowerState invalidBattery{};
+  invalidBattery.percent = 0;
+  invalidBattery.voltageMv = 0;
+  invalidBattery.sampleOk = false;
+  scenes.push_back({"overview-battery-invalid", fullWidth, invalidBattery,
+                    sampleEnvironment(), onlineNetwork(), ScreenPage::Overview, 1000});
   scenes.push_back({"overview-codex-thinking", codexAgent("thinking", AgentStatus::Running), battery(84, 3980),
                     sampleEnvironment(), onlineNetwork(), ScreenPage::Overview, 1000});
   AgentState done = codexAgent("done", AgentStatus::Completed);
@@ -131,6 +148,47 @@ std::vector<Scene> buildScenes() {
                     ScreenPage::Overview, 1000});
   scenes.push_back({"overview-wifi-reconnecting", offline, lowBattery, noTimeEnv, reconnecting,
                     ScreenPage::Overview, 1000});
+
+  // Wi-Fi icon states on the top bars: four rssiBars() levels (one scene per
+  // bucket) plus unknown/TRY/OFF/OK, then one bucket on the Usage page to
+  // check its narrower Doto-suffix budget (climate starts at x=92 there).
+  AgentState wifiAgent = codexAgent("working", AgentStatus::Running);
+  const PowerState wifiPower = derivePowerState(3980, false);
+  // One scene per rssiBars() bucket; the filename states the actual level.
+  const int wifiRssi[] = {-50, -60, -70, -85};  // -> levels 4, 3, 2, 1
+  for (int index = 0; index < 4; ++index) {
+    NetworkState net{};
+    net.wifiKnown = true;
+    net.wifiConnected = true;
+    net.rssi = wifiRssi[index];
+    net.ip = "192.168.1.50";
+    char name[48];
+    snprintf(name, sizeof(name), "overview-wifi-signal-%dof4", 4 - index);
+    scenes.push_back({name, wifiAgent, wifiPower, sampleEnvironment(), net,
+                      ScreenPage::Overview, 1000});
+  }
+  NetworkState wifiOff{};
+  wifiOff.wifiKnown = true;
+  wifiOff.reconnectAttempts = 7;
+  scenes.push_back({"overview-wifi-off", wifiAgent, wifiPower, sampleEnvironment(), wifiOff,
+                    ScreenPage::Overview, 1000});
+  NetworkState wifiTrying{};
+  wifiTrying.wifiKnown = true;
+  wifiTrying.wifiConnecting = true;
+  wifiTrying.reconnectAttempts = 2;
+  scenes.push_back({"overview-wifi-connecting", wifiAgent, wifiPower, sampleEnvironment(), wifiTrying,
+                    ScreenPage::Overview, 1000});
+  scenes.push_back({"overview-wifi-unknown", wifiAgent, wifiPower, sampleEnvironment(), NetworkState{},
+                    ScreenPage::Overview, 1000});
+  NetworkState wifiOkNoRssi{};
+  wifiOkNoRssi.wifiKnown = true;
+  wifiOkNoRssi.wifiConnected = true;
+  scenes.push_back({"overview-wifi-ok-no-rssi", wifiAgent, wifiPower, sampleEnvironment(), wifiOkNoRssi,
+                    ScreenPage::Overview, 1000});
+  NetworkState usageWifi = onlineNetwork();
+  usageWifi.rssi = -70;
+  scenes.push_back({"usage-wifi-signal-2of4", wifiAgent, wifiPower, sampleEnvironment(), usageWifi,
+                    ScreenPage::Usage, 1000});
 
   // Clock page: every style with a busy Codex plus two other agents.
   AgentState multi = codexAgent("thinking", AgentStatus::Running);
@@ -220,6 +278,16 @@ int main(int argc, char** argv) {
   }
   // Easter egg screens are drawn straight into the panel buffer.
   U8G2* panel = renderer.u8g2();
+  // Low-battery notice: drawn directly (no DisplayState), then the panel would
+  // deep sleep. 3540 mV / sampleOk shows as "3.54V".
+  PowerState noticePower{};
+  noticePower.voltageMv = 3540;
+  noticePower.percent = 4;
+  noticePower.lowBattery = true;
+  noticePower.sampleOk = true;
+  renderer.renderLowBatteryNotice(noticePower);
+  failures += hostWritePanelPbm(outDir + "/low-battery-notice.pbm") ? 0 : 1;
+  printf("wrote %s\n", (outDir + "/low-battery-notice.pbm").c_str());
   const uint32_t eggTimes[] = {400, 2600, 6100, 10500};
   for (uint32_t at : eggTimes) {
     drawBuiltinEggFrame(*panel, at);

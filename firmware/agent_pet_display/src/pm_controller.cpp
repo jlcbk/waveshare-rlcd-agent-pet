@@ -178,6 +178,17 @@ void pmSetupButtonWakeup(int bootPin, int keyPin) {
   Serial.printf("[PM] button wake: boot=0x%x key=0x%x group=0x%x\n", b1, b2, g);
 }
 
+// Before a deliberate deep sleep (low-battery protection): auto light sleep
+// off so the idle hook cannot start one between the caller's last draws and
+// esp_deep_sleep_start. DFS bounds stay; the clock does not matter anymore.
+void pmPrepareDeepSleep() {
+  if (gPmOk) {
+    applyPmConfig(kIdleFreqMhz, kIdleMinFreqMhz, false);
+  }
+  gLightSleepWanted = false;
+  gArmSettled = false;
+}
+
 void pmTick(uint32_t now) {
   static uint32_t sLastLogMs = 0;
   gStats.sample(xthal_get_ccount(), esp_timer_get_time());
@@ -230,6 +241,7 @@ bool pmLightSleepArmed() {
 void pmEggPerformanceOn() {}
 void pmEggPerformanceOff() {}
 void pmSetupButtonWakeup(int, int) {}
+void pmPrepareDeepSleep() {}
 void pmTick(uint32_t) {}
 
 #endif

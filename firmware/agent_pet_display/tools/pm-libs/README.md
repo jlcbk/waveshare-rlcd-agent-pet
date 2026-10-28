@@ -73,9 +73,8 @@ Keep `RLCD_PIO_PACKAGES` in the same shell when using the top-level upload
 command. The isolated directory links other tool packages to the existing
 PlatformIO installation; it does not contain a copy of the custom SDK. Without
 the PM SDK, the firmware can still compile but falls back to a fixed CPU clock
-without automatic light sleep. The older `use-pm-sdk.sh` is a machine-specific
-global swap script; do not run it on another machine or use it as a general
-installation method.
+without automatic light sleep. The former machine-specific global swap script
+has been removed; use the isolated package directory above instead.
 
 ## Verification of the rebuilt libs
 

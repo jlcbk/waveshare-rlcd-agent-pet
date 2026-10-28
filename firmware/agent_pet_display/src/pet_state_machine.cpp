@@ -200,6 +200,10 @@ std::string tickerText(const std::string& statusDetail, const std::string& task,
   return statusDetail;
 }
 
+// Today's usage value keeps the bridge's exact protocol spelling here
+// ("49M tok"); only the Overview page expands the unit at draw time via
+// expandTodayTokenUnit() in usage_visuals.
+
 std::string focusLabelText(const AgentState& agent) {
   if (agent.focusMode == FocusMode::Pinned && agent.focusCount > 0 &&
       agent.focusIndex >= 0 && agent.focusIndex < agent.focusCount) {
@@ -259,6 +263,27 @@ std::string networkLineText(const NetworkState& network) {
            network.wifiConnecting ? "WIFI TRY" : "WIFI OFF",
            static_cast<unsigned long>(network.reconnectAttempts));
   return buffer;
+}
+
+// Structured fields for the Overview/Usage top-bar wifi icon; the renderer
+// reads these instead of parsing the legacy "WIFI n/4" strings above (which
+// the clock page and footer keep using). Same NetworkState mapping, so the
+// icon can never disagree with the text on the other pages.
+WifiIconState wifiIconStateFor(const NetworkState& network) {
+  if (!network.wifiKnown) {
+    return WifiIconState::Unknown;
+  }
+  if (network.wifiConnected) {
+    return network.rssi < 0 ? WifiIconState::Connected : WifiIconState::ConnectedNoRssi;
+  }
+  return network.wifiConnecting ? WifiIconState::Connecting : WifiIconState::Off;
+}
+
+int wifiIconLevelFor(const NetworkState& network) {
+  if (network.wifiKnown && network.wifiConnected && network.rssi < 0) {
+    return rssiBars(network.rssi);
+  }
+  return 0;
 }
 
 std::string bridgeLineText(const AgentState& agent, const NetworkState& network) {
@@ -416,6 +441,8 @@ DisplayState deriveDisplayState(const AgentState& agent,
   view.buddyBubble = buddyBubbleText(agent.statusDetail, agent.status);
   view.linkLabel = wifiLinkLabel(network);
   view.networkLine = networkLineText(network);
+  view.wifiIconState = wifiIconStateFor(network);
+  view.wifiIconLevel = wifiIconLevelFor(network);
   view.bridgeLine = bridgeLineText(agent, network);
   view.footerMessage = agent.connected ? tickerText(view.statusDetail, agent.task, agent.updatedAt)
                                        : offlineFooterText(network);
