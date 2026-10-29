@@ -14,6 +14,7 @@
 #include "anim_codec.h"
 #include "app_config.h"
 #include "poll_policy.h"
+#include "usage_visuals.h"
 
 namespace {
 
@@ -98,7 +99,8 @@ void pollOnce() {
       const AgentState& prev = gSnapshot.agent;
       if (firstSuccess || prev.status != agent.status || prev.statusDetail != agent.statusDetail ||
           prev.task != agent.task || prev.usageToday != agent.usageToday ||
-          prev.usageContext != agent.usageContext || prev.usageQuota != agent.usageQuota) {
+          prev.usageContext != agent.usageContext ||
+          !quotaUsageSameIgnoringCountdown(prev.usageQuota, agent.usageQuota)) {
         gLastAgentChangeMs = doneAt;
       }
       gSnapshot.agent = agent;

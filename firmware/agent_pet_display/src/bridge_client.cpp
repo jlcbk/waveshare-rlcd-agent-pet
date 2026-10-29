@@ -31,6 +31,8 @@ const char* fallbackTaskForSource(SourceKind source) {
       return "OPENCLAW SESSION";
     case SourceKind::ClaudeCode:
       return "CLAUDE SESSION";
+    case SourceKind::Antigravity:
+      return "ANTIGRAVITY SESSION";
     default:
       return "AGENT SESSION";
   }
@@ -105,6 +107,9 @@ SourceKind parseSourceKind(const char* value) {
   if (strcmp(value, "claude-code") == 0) {
     return SourceKind::ClaudeCode;
   }
+  if (strcmp(value, "antigravity") == 0 || strcmp(value, "agy") == 0) {
+    return SourceKind::Antigravity;
+  }
   if (text.find("codex") != std::string::npos) {
     return SourceKind::Codex;
   }
@@ -116,6 +121,10 @@ SourceKind parseSourceKind(const char* value) {
   }
   if (text.find("claude") != std::string::npos) {
     return SourceKind::ClaudeCode;
+  }
+  if (text.find("antigravity") != std::string::npos ||
+      (text.size() >= 4 && text.compare(text.size() - 4, 4, "-agy") == 0)) {
+    return SourceKind::Antigravity;
   }
   return SourceKind::Unknown;
 }
@@ -247,6 +256,7 @@ bool fillAgentState(const JsonDocument& doc, AgentState& outState) {
   const char* focusId = doc["focus_id"].as<const char*>();
 
   outState.source = parseSourceKind(source);
+  outState.sourceRaw = std::string(source ? source : "");
   outState.status = parseAgentStatus(status);
   outState.statusDetail = parseAgentStatusDetail(status);
   outState.task = sanitizeDisplayText(task, outState.source);
@@ -266,8 +276,10 @@ bool fillAgentState(const JsonDocument& doc, AgentState& outState) {
       break;
     }
     AgentSlotSummary& outSlot = outState.agentSlots[slotIndex];
+    const char* slotSource = slot["source"].as<const char*>();
     outSlot.id = std::string(slot["id"].as<const char*>() ? slot["id"].as<const char*>() : "");
-    outSlot.source = parseSourceKind(slot["source"].as<const char*>());
+    outSlot.source = parseSourceKind(slotSource);
+    outSlot.sourceRaw = std::string(slotSource ? slotSource : "");
     outSlot.status = parseAgentStatus(slot["status"].as<const char*>());
     outSlot.task = sanitizeDisplayText(slot["task"].as<const char*>(), outSlot.source);
     outSlot.updatedAt =

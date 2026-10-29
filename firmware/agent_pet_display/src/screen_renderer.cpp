@@ -201,60 +201,141 @@ void drawUsageDetailCard(int y,
                clipDotoTextToPixelWidth(hint, kUsageBigCardWidth - 16, DotoFontSize::Small));
 }
 
-void drawOverviewMetric(const ScreenRect& rect, const std::string& label, const std::string& value) {
-  // Full-width card (376px): the value column starts at +104 and gets 272px,
-  // so the font step-down below only triggers for pathological input — every
-  // stock reading ("49M Token", "189k / 258k", "12 / 250") fits at helvB24.
-  // The label column keeps helvB12 and clips at 92px; the longest stock label
-  // (CONTEXT) measures 79px.
-  constexpr int valueOffset = 104;
+void drawOverviewSourcePill(int rightX, int y, const std::string& label) {
   gU8g2->setFont(u8g2_font_helvB12_tr);
-  gU8g2->drawStr(rect.x, rect.y + 9, clipTextToPixelWidth(label, valueOffset - 12).c_str());
-  // Step the value down helvB24 -> helvB18 -> helvB12 before ever clipping, so
-  // real readings never lose digits; ".." is reserved for pathological input.
-  // The y offsets keep all three sizes on the helvB24 baseline (y + 27).
-  const int available = rect.w - valueOffset;
-  const uint8_t* fonts[] = {u8g2_font_helvB24_tr, u8g2_font_helvB18_tr, u8g2_font_helvB12_tr};
-  const int yOffsets[] = {2, 8, 15};
-  int pick = 0;
-  gU8g2->setFont(fonts[pick]);
-  while (pick < 2 && gU8g2->getStrWidth(value.c_str()) > available) {
-    gU8g2->setFont(fonts[++pick]);
-  }
-  gU8g2->drawStr(rect.x + valueOffset, rect.y + yOffsets[pick],
-                 clipTextToPixelWidth(value, available).c_str());
+  const std::string clipped = clipTextToPixelWidth(label, 180);
+  const int tw = gU8g2->getStrWidth(clipped.c_str());
+  const int w = tw + 14;
+  const int drawX = rightX - w;
+  gU8g2->drawRBox(drawX, y, w, 20, 4);
+  gU8g2->setDrawColor(1);
+  gU8g2->drawStr(drawX + 7, y + 4, clipped.c_str());
+  gU8g2->setDrawColor(0);
 }
 
-void drawOverviewQuota(const ScreenRect& rect, const std::string& label, const std::string& value) {
-  const QuotaUsage usage = parseQuotaUsage(value);
-  const QuotaBarLayout bars = overviewQuotaBarLayout();
-  gU8g2->setFont(u8g2_font_helvB12_tr);
-  // 66px: measured "QUOTA" is 60px and must not clip (".." was shown at 56px);
-  // still 4px clear of the "5H n%" text that starts at card.x + 70.
-  gU8g2->drawStr(rect.x, rect.y + 5, clipTextToPixelWidth(label, 66).c_str());
-  const int values[] = {usage.fiveHourPercent, usage.weekPercent};
-  const char* names[] = {"5H", "WK"};
-  const ScreenRect barRects[] = {bars.fiveHourBar, bars.weekBar};
-  for (int index = 0; index < 2; ++index) {
-    char text[24];
-    if (values[index] < 0) {
-      snprintf(text, sizeof(text), "%s --", names[index]);
-    } else {
-      snprintf(text, sizeof(text), "%s %d%%", names[index], values[index]);
+void drawOverviewHeroStatus(int x, int maxWidth, int centerY, const std::string& statusText) {
+  struct FontTier {
+    const uint8_t* font;
+    int capHeight;
+  };
+  static const FontTier kTiers[] = {
+      {u8g2_font_fub35_tr, 35},
+      {u8g2_font_fub30_tr, 30},
+      {u8g2_font_fub25_tr, 25},
+      {u8g2_font_helvB24_tr, 24},
+      {u8g2_font_fub20_tr, 20},
+      {u8g2_font_fub17_tr, 17},
+      {u8g2_font_fub14_tr, 14},
+  };
+  constexpr int kTierCount = sizeof(kTiers) / sizeof(kTiers[0]);
+  int chosen = kTierCount - 1;
+  for (int i = 0; i < kTierCount; ++i) {
+    gU8g2->setFont(kTiers[i].font);
+    if (gU8g2->getStrWidth(statusText.c_str()) <= maxWidth) {
+      chosen = i;
+      break;
     }
-    const ScreenRect& bar = barRects[index];
-    gU8g2->drawStr(bar.x, rect.y + 5, clipTextToPixelWidth(text, bar.w).c_str());
-    gU8g2->drawFrame(bar.x, bar.y, bar.w, bar.h);
-    if (values[index] > 0) {
-      const int percent = values[index] > 100 ? 100 : values[index];
-      gU8g2->drawBox(bar.x + 1, bar.y + 1, ((bar.w - 2) * percent) / 100, bar.h - 2);
+  }
+  gU8g2->setFont(kTiers[chosen].font);
+  const std::string fitted = clipTextToPixelWidth(statusText, maxWidth);
+  const int w = gU8g2->getStrWidth(fitted.c_str());
+  const int drawX = x + maxWidth - w;
+  const int drawY = centerY - (kTiers[chosen].capHeight / 2) - 2;
+  gU8g2->drawStr(drawX, drawY, fitted.c_str());
+}
+
+std::string overviewRightSubtitle(const DisplayState& display) {
+  static constexpr const char* kModelPrefix = "Model: ";
+  static constexpr size_t kModelPrefixLen = 7;
+  if (display.sidebarQuotaHint.size() > kModelPrefixLen &&
+      display.sidebarQuotaHint.compare(0, kModelPrefixLen, kModelPrefix) == 0) {
+    return display.sidebarQuotaHint.substr(kModelPrefixLen);
+  }
+  if (display.sidebarQuotaStyle != "quota" && !display.sidebarQuota.empty() &&
+      display.sidebarQuota != "--") {
+    return display.sidebarQuota;
+  }
+  if (!display.taskLine.empty() && display.taskLine != "Waiting for next task") {
+    return display.taskLine;
+  }
+  return std::string();
+}
+
+void drawOverviewBottomColumns(const DisplayState& display) {
+  constexpr int kLeftX = 16;
+  constexpr int kColWidth = 168;
+  constexpr int kLeftRightEdge = kLeftX + kColWidth;  // 184
+  constexpr int kRightX = 216;
+  constexpr int kRightEdge = kRightX + kColWidth;     // 384
+
+  gU8g2->drawHLine(12, 162, 376);
+  gU8g2->drawVLine(200, 174, 82);
+
+  // Left Column: TODAY (row 1) + CONTEXT with progress bar (row 2)
+  gU8g2->setFont(u8g2_font_helvB10_tr);
+  const std::string todayLabel = clipTextToPixelWidth(display.sidebarTokensLabel, 68);
+  gU8g2->drawStr(kLeftX, 180, todayLabel.c_str());
+  const std::string todayValue =
+      clipTextToPixelWidth(expandTodayTokenUnit(display.sidebarTokens), kColWidth - 72);
+  gU8g2->drawStr(kLeftRightEdge - gU8g2->getStrWidth(todayValue.c_str()), 180, todayValue.c_str());
+
+  gU8g2->drawHLine(kLeftX, 208, kColWidth);
+
+  const std::string ctxLabel = clipTextToPixelWidth(display.sidebarContextLabel, 72);
+  gU8g2->drawStr(kLeftX, 220, ctxLabel.c_str());
+  const std::string ctxValue = clipTextToPixelWidth(display.sidebarContext, kColWidth - 76);
+  gU8g2->drawStr(kLeftRightEdge - gU8g2->getStrWidth(ctxValue.c_str()), 220, ctxValue.c_str());
+
+  gU8g2->drawFrame(kLeftX, 238, kColWidth, 6);
+  const int ctxPct = parseContextUsagePercent(display.sidebarContext);
+  if (ctxPct > 0) {
+    const int clamped = ctxPct > 100 ? 100 : ctxPct;
+    gU8g2->drawBox(kLeftX + 1, 239, ((kColWidth - 2) * clamped) / 100, 4);
+  }
+
+  // Right Column: QUOTA (5H + Week stacked) or non-quota fallback
+  if (display.sidebarQuotaStyle == "quota") {
+    const QuotaUsage usage = parseQuotaUsage(display.sidebarQuota);
+    const int values[2] = {usage.fiveHourPercent, usage.weekPercent};
+    const char* names[2] = {"5H", "Week"};
+    const std::string resets[2] = {usage.fiveHourReset, usage.weekReset};
+    const int textYs[2] = {180, 220};
+    const int barYs[2] = {198, 238};
+    for (int i = 0; i < 2; ++i) {
+      char leftText[28];
+      if (values[i] < 0) {
+        snprintf(leftText, sizeof(leftText), "%s  --", names[i]);
+      } else {
+        snprintf(leftText, sizeof(leftText), "%s  %d%%", names[i], values[i]);
+      }
+      gU8g2->setFont(u8g2_font_helvB10_tr);
+      gU8g2->drawStr(kRightX, textYs[i], clipTextToPixelWidth(leftText, kColWidth).c_str());
+      const int leftWidth = gU8g2->getStrWidth(leftText);
+      if (!resets[i].empty()) {
+        const int resetWidth = gU8g2->getStrWidth(resets[i].c_str());
+        if (leftWidth + 6 + resetWidth <= kColWidth) {
+          gU8g2->drawStr(kRightEdge - resetWidth, textYs[i], resets[i].c_str());
+        }
+      }
+      gU8g2->drawFrame(kRightX, barYs[i], kColWidth, 6);
+      if (values[i] > 0) {
+        const int clamped = values[i] > 100 ? 100 : values[i];
+        gU8g2->drawBox(kRightX + 1, barYs[i] + 1, ((kColWidth - 2) * clamped) / 100, 4);
+      }
     }
+  } else {
+    gU8g2->setFont(u8g2_font_helvB10_tr);
+    const std::string qLabel = clipTextToPixelWidth(display.sidebarQuotaLabel, 68);
+    gU8g2->drawStr(kRightX, 180, qLabel.c_str());
+    const std::string qVal = clipTextToPixelWidth(display.sidebarQuota, kColWidth - 72);
+    gU8g2->drawStr(kRightEdge - gU8g2->getStrWidth(qVal.c_str()), 180, qVal.c_str());
+    gU8g2->drawHLine(kRightX, 208, kColWidth);
+    const std::string qHint = clipTextToPixelWidth(display.sidebarQuotaHint, kColWidth);
+    gU8g2->drawStr(kRightX, 220, qHint.c_str());
   }
 }
 
 void renderOverviewPage(const DisplayState& display, const std::string& batteryLine) {
-  const ScreenRect time = overviewTimeCardRect();
-  const ScreenRect status = overviewStatusCardRect();
   gU8g2->setFont(u8g2_font_helvB12_tr);
   // batteryLine arrives as "4.09V  87%" for a valid sample, plain percent
   // otherwise; clip keeps the climate label's room even in the worst case.
@@ -264,41 +345,47 @@ void renderOverviewPage(const DisplayState& display, const std::string& batteryL
   drawWifiIcon(12, display);
   gU8g2->drawStr(12 + kWifiSuffixOffsetX, 5,
                  clipTextToPixelWidth(wifiSuffixText(display), 110 - kWifiSuffixOffsetX).c_str());
-  gU8g2->drawStr(132, 5, clipTextToPixelWidth(display.sidebarClimate, batteryX - 140).c_str());
+  const std::string climateText = clipTextToPixelWidth(display.sidebarClimate, batteryX - 120);
+  const int climateWidth = gU8g2->getStrWidth(climateText.c_str());
+  int climateX = (kLcdWidth - climateWidth) / 2;
+  if (climateX + climateWidth > batteryX - 8) {
+    climateX = batteryX - 8 - climateWidth;
+  }
+  if (climateX < 112) {
+    climateX = 112;
+  }
+  gU8g2->drawStr(climateX, 5, climateText.c_str());
   gU8g2->drawStr(batteryX, 5, batteryText.c_str());
   gU8g2->drawHLine(12, 24, 376);
 
-  gU8g2->setFont(u8g2_font_logisoso42_tn);
-  gU8g2->drawStr(time.x, time.y, clipTextToPixelWidth(display.sidebarTime, 230).c_str());
+  // Fused Top Hero Stage (Variant 2A):
+  // 1. Top Row: Date on Left, [SOURCE] pill on Right
   gU8g2->setFont(u8g2_font_helvB12_tr);
-  const std::string date = clipTextToPixelWidth(display.sidebarDate, 130);
-  const std::string focus = clipTextToPixelWidth(display.focusLabel, 130);
-  gU8g2->drawStr(time.x + time.w - gU8g2->getStrWidth(date.c_str()), time.y + 3, date.c_str());
-  gU8g2->drawStr(time.x + time.w - gU8g2->getStrWidth(focus.c_str()), time.y + 23, focus.c_str());
-  gU8g2->drawHLine(12, 82, 376);
+  const std::string date = clipTextToPixelWidth(display.sidebarDate, 150);
+  gU8g2->drawStr(16, 38, date.c_str());
+  drawOverviewSourcePill(384, 34, display.sourceLabel);
 
-  const std::string source = clipTextToPixelWidth(display.sourceLabel, 200);
-  const std::string bridge = clipTextToPixelWidth(display.bridgeLine, 150);
-  gU8g2->drawStr(status.x, status.y, source.c_str());
-  gU8g2->drawStr(status.x + status.w - gU8g2->getStrWidth(bridge.c_str()), status.y, bridge.c_str());
-  gU8g2->setFont(u8g2_font_helvB24_tr);
-  gU8g2->drawStr(status.x, status.y + 16,
-                 clipTextToPixelWidth(heroStatusText(display), status.w).c_str());
-  gU8g2->setFont(u8g2_font_helvB12_tr);
-  gU8g2->drawStr(status.x, status.y + 48,
-                 clipTextToPixelWidth(display.taskLine, status.w).c_str());
-  gU8g2->drawHLine(12, 153, 376);
+  // 2. Middle Hero Row: Giant 50pt Clock on Left, Adaptive Hero Status on Right
+  gU8g2->setFont(u8g2_font_logisoso50_tn);
+  gU8g2->drawStr(16, 65, clipTextToPixelWidth(display.sidebarTime, 156).c_str());
+  drawOverviewHeroStatus(180, 204, 90, heroStatusText(display));
 
-  // Home page only: the TODAY card spells the unit out ("49M Token"); the
-  // Usage page below keeps the bridge's original "49M tok" spelling.
-  drawOverviewMetric(overviewMetricCardRect(0), display.sidebarTokensLabel,
-                     expandTodayTokenUnit(display.sidebarTokens));
-  drawOverviewMetric(overviewMetricCardRect(1), display.sidebarContextLabel, display.sidebarContext);
-  if (display.sidebarQuotaStyle == "quota") {
-    drawOverviewQuota(overviewMetricCardRect(2), display.sidebarQuotaLabel, display.sidebarQuota);
-  } else {
-    drawOverviewMetric(overviewMetricCardRect(2), display.sidebarQuotaLabel, display.sidebarQuota);
+  // 3. Single Unified Hairline at y = 126
+  gU8g2->drawHLine(16, 126, 368);
+
+  // 4. Unified Sub-Row at y = 138: Bridge + Focus on Left, Model/Task on Right
+  gU8g2->setFont(u8g2_font_helvB10_tr);
+  const std::string leftMeta =
+      clipTextToPixelWidth(display.bridgeLine + "   " + display.focusLabel, 176);
+  gU8g2->drawStr(16, 138, leftMeta.c_str());
+  const std::string rightMeta = clipTextToPixelWidth(overviewRightSubtitle(display), 184);
+  if (!rightMeta.empty()) {
+    gU8g2->drawStr(384 - gU8g2->getStrWidth(rightMeta.c_str()), 138, rightMeta.c_str());
   }
+
+  // Borderless 2-Column Bottom Metrics Section
+  drawOverviewBottomColumns(display);
+
   gU8g2->drawHLine(12, 272, 376);
   gU8g2->setFont(u8g2_font_helvB10_tr);
   gU8g2->drawStr(12, 280, clipTextToPixelWidth(display.footerMessage, 310).c_str());

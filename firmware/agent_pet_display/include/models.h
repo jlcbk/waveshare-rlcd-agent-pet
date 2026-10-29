@@ -11,6 +11,7 @@ enum class SourceKind {
   Hermes,
   OpenClaw,
   ClaudeCode,
+  Antigravity,
   Unknown,
 };
 
@@ -69,10 +70,12 @@ struct AgentSlotSummary {
   std::string task{};
   std::string updatedAt{};
   bool present{false};
+  std::string sourceRaw{};
 };
 
 struct AgentState {
   SourceKind source{SourceKind::Unknown};
+  std::string sourceRaw{};
   AgentStatus status{AgentStatus::Idle};
   std::string statusDetail{"idle"};
   std::string task{};

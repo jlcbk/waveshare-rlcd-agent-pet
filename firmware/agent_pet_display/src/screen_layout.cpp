@@ -34,13 +34,11 @@ ScreenRect overviewMetricCardRect(int index) {
 
 QuotaBarLayout overviewQuotaBarLayout() {
   const ScreenRect card = overviewMetricCardRect(2);
-  // Label column ("QUOTA", clips at 66px) stays on the left, so the bars start
-  // at card.x + 70 as before. The remaining 376 - 70 - 12 = 294px splits into
-  // two 135px bars with a 24px gap; they end at card.x + 364, keeping the same
-  // 12px inner margin as the page edges. "5H n%" / "WK n%" draw above their
-  // bars and measure well under 135px at helvB12.
+  // Align the first bar with the metric value column (card.x + 104).
+  // The remaining 376 - 104 = 272px splits into two 124px bars with a 24px
+  // gap; they end at card.x + 376 (x=388), matching the divider lines.
   return QuotaBarLayout{
-      {card.x + 70, card.y + 26, 135, 4},
-      {card.x + 229, card.y + 26, 135, 4},
+      {card.x + 104, card.y + 26, 124, 4},
+      {card.x + 252, card.y + 26, 124, 4},
   };
 }

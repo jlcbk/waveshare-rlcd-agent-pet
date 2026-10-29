@@ -427,6 +427,27 @@ void test_clock_view_without_bridge_or_time(void) {
   TEST_ASSERT_EQUAL_STRING("zzz", view.clock.petBubble.c_str());
 }
 
+void test_antigravity_and_dynamic_raw_source_get_labels(void) {
+  AgentState agent{};
+  agent.source = SourceKind::Antigravity;
+  agent.sourceRaw = "mac-antigravity";
+  agent.status = AgentStatus::Running;
+  agent.statusDetail = "working";
+  agent.connected = true;
+  const PowerState power{3990, 74, false, false, true};
+  const EnvironmentState environment{};
+
+  const DisplayState agyView = deriveDisplayState(agent, power, environment, ScreenPage::Overview);
+  TEST_ASSERT_EQUAL_STRING("ANTIGRAVITY", agyView.sourceLabel.c_str());
+  TEST_ASSERT_EQUAL_STRING("ANTIGRAVITY WORK", agyView.sidebarAgent.c_str());
+
+  agent.source = SourceKind::Unknown;
+  agent.sourceRaw = "mac-opencode";
+  const DisplayState dynView = deriveDisplayState(agent, power, environment, ScreenPage::Overview);
+  TEST_ASSERT_EQUAL_STRING("OPENCODE", dynView.sourceLabel.c_str());
+  TEST_ASSERT_EQUAL_STRING("OPENCODE WORK", dynView.sidebarAgent.c_str());
+}
+
 int main(void) {
   UNITY_BEGIN();
   RUN_TEST(test_thinking_agent_gets_dedicated_pet_mode);
@@ -447,5 +468,6 @@ int main(void) {
   RUN_TEST(test_clock_view_carries_time_settings_and_agents);
   RUN_TEST(test_clock_pet_sleeps_at_night_when_nothing_runs);
   RUN_TEST(test_clock_view_without_bridge_or_time);
+  RUN_TEST(test_antigravity_and_dynamic_raw_source_get_labels);
   return UNITY_END();
 }

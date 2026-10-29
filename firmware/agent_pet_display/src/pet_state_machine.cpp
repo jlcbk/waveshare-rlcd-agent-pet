@@ -1,6 +1,8 @@
 #include "pet_state_machine.h"
 
+#include <ctype.h>
 #include <stdio.h>
+#include <string.h>
 
 namespace {
 
@@ -16,9 +18,42 @@ const char* sourceLabel(SourceKind source) {
       return "OPENCLAW";
     case SourceKind::ClaudeCode:
       return "CLAUDE";
+    case SourceKind::Antigravity:
+      return "ANTIGRAVITY";
     default:
       return "UNKNOWN";
   }
+}
+
+std::string sourceLabelFor(SourceKind source, const std::string& rawSource) {
+  if (source != SourceKind::Unknown) {
+    return sourceLabel(source);
+  }
+  if (rawSource.empty()) {
+    return "UNKNOWN";
+  }
+  const char* raw = rawSource.c_str();
+  static const char* const kPrefixes[] = {"mac-", "local-", "laptop-", "host-"};
+  for (const char* prefix : kPrefixes) {
+    const size_t prefixLen = strlen(prefix);
+    if (strncasecmp(raw, prefix, prefixLen) == 0 && raw[prefixLen] != '\0') {
+      raw += prefixLen;
+      break;
+    }
+  }
+  std::string out;
+  for (size_t i = 0; raw[i] != '\0' && out.size() < 12; ++i) {
+    const unsigned char c = static_cast<unsigned char>(raw[i]);
+    if (isalnum(c)) {
+      out.push_back(static_cast<char>(toupper(c)));
+    } else if ((c == '-' || c == '_' || c == ' ') && !out.empty() && out.back() != ' ') {
+      out.push_back(' ');
+    }
+  }
+  while (!out.empty() && out.back() == ' ') {
+    out.pop_back();
+  }
+  return out.empty() ? std::string("UNKNOWN") : out;
 }
 
 const char* statusLabel(AgentStatus status) {
@@ -376,7 +411,7 @@ ClockView deriveClockView(const AgentState& agent,
         continue;
       }
       ClockAgentLine& line = clock.agents[lines++];
-      line.source = sourceLabel(slot.source);
+      line.source = sourceLabelFor(slot.source, slot.sourceRaw);
       line.status = statusBadge(slot.status);
       line.attention = slot.status == AgentStatus::NeedsAttention;
       line.active = slot.status == AgentStatus::Running;
@@ -416,13 +451,13 @@ DisplayState deriveDisplayState(const AgentState& agent,
                                 const DisplaySettings& settings) {
   DisplayState view{};
   view.page = page;
-  view.sourceLabel = sourceLabel(agent.source);
+  view.sourceLabel = sourceLabelFor(agent.source, agent.sourceRaw);
   view.taskLine = agent.task.empty() ? "Waiting for next task" : agent.task;
   view.statusLabel = statusLabel(agent.status);
   view.statusDetail = statusDetailLabel(agent.statusDetail, agent.status);
   view.offline = !agent.connected;
   view.showBatteryDetail = shouldShowBatteryDetail(power);
-  view.sidebarAgent = std::string(sourceLabel(agent.source)) + " " +
+  view.sidebarAgent = view.sourceLabel + " " +
                       statusDetailBadge(agent.statusDetail, agent.status);
   view.sidebarTokens = agent.usageToday.empty() ? "--" : agent.usageToday;
   view.sidebarTokensLabel = agent.usageTodayLabel.empty() ? "TODAY" : agent.usageTodayLabel;

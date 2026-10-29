@@ -41,19 +41,13 @@ void test_metric_cards_keep_vertical_rhythm_and_clamp_index(void) {
 void test_quota_bars_are_separate_and_fit_the_quota_section(void) {
   const ScreenRect quota = overviewMetricCardRect(2);  // {12, 227, 376, 41}
   const QuotaBarLayout bars = overviewQuotaBarLayout();
-  // Geometry derivation: the "QUOTA" label column keeps 70px on the left
-  // (label clips at 66px), so bars start at quota.x + 70. The remaining
-  // 376 - 70 - 12 = 294px splits into two 135px bars separated by a 24px
-  // gap; the second bar ends at quota.x + 364, preserving the 12px inner
-  // margin used by the page edges. Text ("5H n%" / "WK n%") draws above
-  // each bar at helvB12 and measures well under 135px.
-  TEST_ASSERT_EQUAL(quota.x + 70, bars.fiveHourBar.x);
+  TEST_ASSERT_EQUAL(quota.x + 104, bars.fiveHourBar.x);
   TEST_ASSERT_EQUAL(quota.y + 26, bars.fiveHourBar.y);
-  TEST_ASSERT_EQUAL(135, bars.fiveHourBar.w);
+  TEST_ASSERT_EQUAL(124, bars.fiveHourBar.w);
   TEST_ASSERT_EQUAL(4, bars.fiveHourBar.h);
-  TEST_ASSERT_EQUAL(quota.x + 229, bars.weekBar.x);
+  TEST_ASSERT_EQUAL(quota.x + 252, bars.weekBar.x);
   TEST_ASSERT_EQUAL(quota.y + 26, bars.weekBar.y);
-  TEST_ASSERT_EQUAL(135, bars.weekBar.w);
+  TEST_ASSERT_EQUAL(124, bars.weekBar.w);
   TEST_ASSERT_EQUAL(4, bars.weekBar.h);
   // Behavioural invariants: separate, ordered, inside the quota card.
   TEST_ASSERT_TRUE(bars.fiveHourBar.x >= quota.x);

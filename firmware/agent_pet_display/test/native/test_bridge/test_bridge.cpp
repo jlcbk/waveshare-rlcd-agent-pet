@@ -457,6 +457,23 @@ void test_egg_request_is_reported_only_when_set(void) {
   TEST_ASSERT_TRUE(buildTelemetryQuery(t).find("&eggreq=3") != std::string::npos);
 }
 
+void test_antigravity_payload_maps_to_antigravity_source_and_preserves_raw(void) {
+  const char* json =
+      "{\"ok\":true,\"unread_count\":0,\"source\":\"mac-antigravity\",\"task\":\"\xE4\xB8\xAD\xE6\x96\x87\","
+      "\"updated_at\":\"2026-10-29T10:30:00Z\",\"current_status\":\"working\","
+      "\"agents\":[{\"id\":\"mac-antigravity\",\"source\":\"mac-antigravity\",\"status\":\"working\"}]}";
+  AgentState state{};
+
+  const bool ok = parseAgentStatePayload(json, state);
+
+  TEST_ASSERT_TRUE(ok);
+  TEST_ASSERT_EQUAL(static_cast<int>(SourceKind::Antigravity), static_cast<int>(state.source));
+  TEST_ASSERT_EQUAL_STRING("mac-antigravity", state.sourceRaw.c_str());
+  TEST_ASSERT_EQUAL_STRING("ANTIGRAVITY SESSION", state.task.c_str());
+  TEST_ASSERT_EQUAL(static_cast<int>(SourceKind::Antigravity), static_cast<int>(state.agentSlots[0].source));
+  TEST_ASSERT_EQUAL_STRING("mac-antigravity", state.agentSlots[0].sourceRaw.c_str());
+}
+
 int main(void) {
   UNITY_BEGIN();
   RUN_TEST(test_parse_running_codex_payload);
@@ -487,5 +504,6 @@ int main(void) {
   RUN_TEST(test_anim_chunk_url_keeps_token_and_encodes_id);
   RUN_TEST(test_redact_url_token);
   RUN_TEST(test_egg_request_is_reported_only_when_set);
+  RUN_TEST(test_antigravity_payload_maps_to_antigravity_source_and_preserves_raw);
   return UNITY_END();
 }
