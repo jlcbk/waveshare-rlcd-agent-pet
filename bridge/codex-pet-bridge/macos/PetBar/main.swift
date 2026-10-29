@@ -107,6 +107,7 @@ struct EggInfo: Decodable {
 
 struct RealtimeInfo: Decodable {
     let claude: ClaudeRealtime?
+    let antigravity: ClaudeRealtime?
 }
 
 struct ClaudeRealtime: Decodable {
@@ -146,6 +147,7 @@ func familyOf(_ source: String?) -> String {
     let text = (source ?? "").lowercased()
     if text.contains("claude") { return "claude" }
     if text.contains("codex") { return "codex" }
+    if text.contains("antigravity") || text == "agy" || text.hasSuffix("-agy") { return "antigravity" }
     if text.contains("hermes") { return "hermes" }
     if text.contains("openclaw") { return "openclaw" }
     return ""
@@ -155,6 +157,7 @@ func familyName(_ family: String, fallback: String?) -> String {
     switch family {
     case "claude": return "Claude Code"
     case "codex": return "Codex"
+    case "antigravity": return "Antigravity"
     case "hermes": return "Hermes"
     case "openclaw": return "OpenClaw"
     default: return fallback ?? "智能体"
@@ -163,7 +166,7 @@ func familyName(_ family: String, fallback: String?) -> String {
 
 func prettyTask(_ task: String?) -> String {
     guard let task = task, !task.isEmpty else { return "" }
-    for suffix in ["codex-runtime", "claude-session", "agent-task"] where task.hasSuffix(suffix) {
+    for suffix in ["codex-runtime", "claude-session", "antigravity-session", "agent-task"] where task.hasSuffix(suffix) {
         return ""
     }
     return task
@@ -491,6 +494,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             switch family {
             case "claude": short = "CC"
             case "codex": short = "CX"
+            case "antigravity": short = "AG"
             case "hermes": short = "HM"
             case "openclaw": short = "OC"
             default: short = ""
@@ -557,9 +561,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             var detail: [String] = []
             let task = prettyTask(current.task)
             if !task.isEmpty { detail.append(task) }
-            if family == "claude", let claude = status.realtime?.claude {
-                if let tool = claude.tool, !tool.isEmpty { detail.append(tool) }
-                if let project = claude.project, !project.isEmpty { detail.append(project) }
+            let activeRealtime = family == "claude" ? status.realtime?.claude : (family == "antigravity" ? status.realtime?.antigravity : nil)
+            if let rt = activeRealtime {
+                if let tool = rt.tool, !tool.isEmpty { detail.append(tool) }
+                if let project = rt.project, !project.isEmpty { detail.append(project) }
             }
             let ago = timeAgo(current.time, now: now)
             if !ago.isEmpty { detail.append(ago) }

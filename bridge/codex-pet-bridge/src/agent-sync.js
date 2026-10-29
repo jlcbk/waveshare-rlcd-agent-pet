@@ -6,6 +6,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { DEFAULT_ANTIGRAVITY_GEMINI_DIR, loadAntigravityRealtimeState } from "./antigravity-db.js";
 import { DEFAULT_CLAUDE_PROJECTS_DIR, loadClaudeRealtimeState } from "./claude-session-status.js";
 import { buildHermesLogSyncNotifications } from "./hermes-log-channel.js";
 import { readHermesLogActivity } from "./hermes-log-sync.js";
@@ -15,6 +16,9 @@ const NOTIFY_CLIENT = resolve(HERE, "notify-client.js");
 const STATE_PATH = resolve(process.env.PET_AGENT_SYNC_STATE || join(homedir(), ".codex-pet-bridge", "agent-sync-state.json"));
 const CODEX_SESSIONS_DIR = resolve(process.env.CODEX_SESSIONS_DIR || join(homedir(), ".codex", "sessions"));
 const CLAUDE_PROJECTS_DIR = resolve(process.env.PET_BRIDGE_CLAUDE_PROJECTS || DEFAULT_CLAUDE_PROJECTS_DIR);
+const ANTIGRAVITY_GEMINI_DIR = resolve(
+  process.env.PET_BRIDGE_ANTIGRAVITY_HOME || DEFAULT_ANTIGRAVITY_GEMINI_DIR
+);
 const HERMES_LOG_PATH = resolve(process.env.PET_AGENT_SYNC_HERMES_LOG || join(homedir(), ".hermes", "logs", "agent.log"));
 const SOURCE_PREFIX = process.env.PET_AGENT_SYNC_PREFIX || "local";
 const ACTIVE_WINDOW_MS = numberFromEnv("PET_AGENT_SYNC_ACTIVE_WINDOW_MS", 45000);
@@ -52,6 +56,14 @@ async function tick() {
     task: `${SOURCE_PREFIX}-claude-session`,
     runningMessage: `${SOURCE_PREFIX} Claude Code is working`,
     doneMessage: `${SOURCE_PREFIX} Claude Code response stopped`
+  });
+  await updateChannel(state, {
+    key: "antigravity",
+    active: await antigravityActive(),
+    source: `${SOURCE_PREFIX}-antigravity`,
+    task: `${SOURCE_PREFIX}-antigravity-session`,
+    runningMessage: `${SOURCE_PREFIX} Antigravity is working`,
+    doneMessage: `${SOURCE_PREFIX} Antigravity response stopped`
   });
   await updateHermesLogChannel(state);
   notify(["--flush"]);
@@ -153,6 +165,22 @@ async function claudeActive() {
     if (process.env.PET_AGENT_SYNC_CLAUDE_PROCESS_SCAN !== "1") return false;
   }
   return claudeProcessActive();
+}
+
+async function antigravityActive() {
+  if (process.env.PET_AGENT_SYNC_ANTIGRAVITY === "0") return false;
+  if (!existsSync(ANTIGRAVITY_GEMINI_DIR)) return false;
+  const state = await loadAntigravityRealtimeState({
+    geminiDir: ANTIGRAVITY_GEMINI_DIR,
+    activeWindowMs: ACTIVE_WINDOW_MS,
+    sourcePrefix: SOURCE_PREFIX
+  }).catch(() => null);
+  return Boolean(
+    state &&
+      state.status !== "completed" &&
+      state.status !== "failed" &&
+      state.status !== "error"
+  );
 }
 
 function claudeProcessActive() {

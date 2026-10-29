@@ -45,6 +45,7 @@ const STATUS = {
 const FAMILY = {
   codex: ["Codex", "CX"],
   claude: ["Claude Code", "CC"],
+  antigravity: ["Antigravity", "AG"],
   hermes: ["Hermes", "HM"],
   openclaw: ["OpenClaw", "OC"]
 };
@@ -99,6 +100,7 @@ function familyOf(source) {
   const text = String(source || "").toLowerCase();
   if (text.includes("claude")) return "claude";
   if (text.includes("codex")) return "codex";
+  if (text.includes("antigravity") || text === "agy" || text.endsWith("-agy")) return "antigravity";
   if (text.includes("hermes")) return "hermes";
   if (text.includes("openclaw")) return "openclaw";
   return "";
@@ -110,7 +112,7 @@ function statusInfo(status) {
 
 function prettyTask(task) {
   const text = String(task || "");
-  if (!text || /(^|-)(codex-runtime|claude-session|agent-task)$/.test(text)) return "";
+  if (!text || /(^|-)(codex-runtime|claude-session|antigravity-session|agent-task)$/.test(text)) return "";
   return text;
 }
 
@@ -327,23 +329,28 @@ function renderNow(status) {
 
   const detail = $("#nowDetail");
   detail.replaceChildren();
-  const claude = status.realtime?.claude;
-  if (family === "claude" && claude) {
-    if (claude.tool) detail.append(el("span", { text: `工具 ${claude.tool}` }));
-    if (claude.model) detail.append(el("span", { text: `模型 ${claude.model}` }));
-    if (claude.context?.window) {
-      const ratio = Math.min(1, claude.context.used / claude.context.window);
+  const activeRealtime =
+    family === "claude"
+      ? status.realtime?.claude
+      : family === "antigravity"
+        ? status.realtime?.antigravity
+        : null;
+  if (activeRealtime) {
+    if (activeRealtime.tool) detail.append(el("span", { text: `工具 ${activeRealtime.tool}` }));
+    if (activeRealtime.model) detail.append(el("span", { text: `模型 ${activeRealtime.model}` }));
+    if (activeRealtime.context?.window) {
+      const ratio = Math.min(1, activeRealtime.context.used / activeRealtime.context.window);
       detail.append(
         el(
           "span",
           { class: "meter", title: "上下文占用" },
           "上下文",
           el("span", { class: "track" }, el("span", { class: "fill", style: `width:${(ratio * 100).toFixed(1)}%` })),
-          `${abbrev(claude.context.used)} / ${abbrev(claude.context.window)}`
+          `${abbrev(activeRealtime.context.used)} / ${abbrev(activeRealtime.context.window)}`
         )
       );
     }
-    if (claude.project) detail.append(el("span", { text: `项目 ${claude.project}` }));
+    if (activeRealtime.project) detail.append(el("span", { text: `项目 ${activeRealtime.project}` }));
   }
 
   const usage = status.usage || {};

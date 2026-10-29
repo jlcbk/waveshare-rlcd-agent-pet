@@ -1,0 +1,18 @@
+{
+  "name": "antigravity-probe",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone monitor for Google Antigravity working state, context, session tokens and quota - pre-merge testbed for codex-pet-bridge",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node test/translate.test.mjs && node test/db.test.mjs && sh test/fake-events.sh",
+    "hooks:install": "sh install-hooks.sh",
+    "hooks:print": "sh install-hooks.sh --print",
+    "hooks:uninstall": "sh install-hooks.sh --uninstall",
+    "hooks:selftest": "sh install-hooks.sh --selftest"
+  }
+}

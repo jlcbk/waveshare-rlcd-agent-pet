@@ -11,6 +11,20 @@ import { fileURLToPath } from "node:url";
 
 import { AnimStore } from "./anim-store.js";
 import {
+  DEFAULT_ANTIGRAVITY_GEMINI_DIR,
+  antigravityTokensToday,
+  fetchAntigravityQuota,
+  loadAntigravityRealtimeState,
+  readSnapshot as readAntigravitySnapshot
+} from "./antigravity-db.js";
+import {
+  HOOK_EVENTS,
+  antigravityShortModelName,
+  formatResetCountdown,
+  quotaSummary,
+  translateHook
+} from "./antigravity-translate.js";
+import {
   DEFAULT_CLAUDE_PROJECTS_DIR,
   claudeTokensToday,
   loadClaudeRealtimeState,
@@ -65,6 +79,17 @@ const UI_DIR = resolve(process.env.PET_BRIDGE_UI_DIR || join(HERE, "..", "ui"));
 const MAX_UPLOAD_BYTES = numberFromEnv("PET_BRIDGE_MAX_UPLOAD_BYTES", 48 * 1024 * 1024);
 const CLAUDE_PROJECTS_DIR = resolve(process.env.PET_BRIDGE_CLAUDE_PROJECTS || DEFAULT_CLAUDE_PROJECTS_DIR);
 const CLAUDE_REALTIME_ENABLED = process.env.PET_BRIDGE_CLAUDE_TRANSCRIPTS !== "0";
+const ANTIGRAVITY_GEMINI_DIR = resolve(
+  process.env.PET_BRIDGE_ANTIGRAVITY_HOME ||
+    (process.env.PET_BRIDGE_CLAUDE_PROJECTS
+      ? join(dirname(CLAUDE_PROJECTS_DIR), "gemini")
+      : DEFAULT_ANTIGRAVITY_GEMINI_DIR)
+);
+const ANTIGRAVITY_REALTIME_ENABLED = process.env.PET_BRIDGE_ANTIGRAVITY !== "0";
+const ANTIGRAVITY_QUOTA_INTERVAL_MS = nonNegativeNumberFromEnv(
+  "PET_BRIDGE_ANTIGRAVITY_QUOTA_INTERVAL_MS",
+  process.env.PET_BRIDGE_CLAUDE_PROJECTS ? 0 : 10 * 60_000
+);
 const MAX_DEVICE_SLOTS = numberFromEnv("PET_BRIDGE_MAX_DEVICE_SLOTS", 6);
 const SLOT_MAX_AGE_MS = numberFromEnv("PET_BRIDGE_SLOT_MAX_AGE_MS", 12 * 60 * 60 * 1000);
 const EGG_DELAY_MS = numberFromEnv("PET_BRIDGE_EGG_DELAY_MS", 3500);
@@ -87,6 +112,18 @@ let usageCache = {
   data: null
 };
 let claudeCache = { loadedAt: 0, realtime: null, today: 0, todayLoadedAt: 0 };
+let antigravityCache = {
+  loadedAt: 0,
+  realtime: null,
+  today: 0,
+  todayLoadedAt: 0,
+  snapshot: null,
+  hookEvent: null,
+  hookAt: 0,
+  internalConversationId: "",
+  quota: { at: null, groups: null, summary: "", error: null },
+  quotaPromise: null
+};
 const settingsStore = new SettingsStore(SETTINGS_PATH);
 const deviceRegistry = new DeviceRegistry();
 const animStore = new AnimStore(ANIM_DIR, { maxBytes: MAX_UPLOAD_BYTES });
@@ -209,6 +246,9 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/status") {
+      if (url.searchParams.has("refreshQuota")) {
+        await refreshAntigravityQuota();
+      }
       sendJson(res, 200, await statusView());
       return;
     }
@@ -285,9 +325,50 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    const antigravityHookMatch = url.pathname.match(/^\/hook\/(?:antigravity\/)?([A-Za-z]+)$/);
+    if (req.method === "POST" && antigravityHookMatch) {
+      const eventName = antigravityHookMatch[1];
+      if (!HOOK_EVENTS.has(eventName)) {
+        sendJson(res, 400, { ok: false, error: `unknown hook event '${eventName}'` });
+        return;
+      }
+      const body = await readJson(req);
+      const translated = translateHook(eventName, body);
+      if (
+        antigravityCache.internalConversationId &&
+        translated.sessionId === antigravityCache.internalConversationId
+      ) {
+        sendJson(res, 202, { ok: true, ignored: true });
+        return;
+      }
+      recordAntigravityHook(translated);
+      const event = normalizeEvent({
+        ...translated,
+        task: slugFromPath(translated.workspace) || `${CODEX_SOURCE_PREFIX}-antigravity-session`,
+        notify:
+          translated.status === "completed" ||
+          translated.status === "failed" ||
+          translated.status === "needs-attention"
+      });
+      await publishEvent(event);
+      sendJson(res, 202, { ok: true, status: event.status, event });
+      return;
+    }
+
     if (req.method === "POST" && url.pathname === "/events") {
       const body = await readJson(req);
-      const event = normalizeEvent(body);
+      const hookEventParam = stringValue(url.searchParams.get("event"));
+      const rawEvent =
+        hookEventParam && HOOK_EVENTS.has(hookEventParam)
+          ? translateHook(hookEventParam, body)
+          : body;
+      const event = normalizeEvent(rawEvent);
+      if (sourceFamily(event.source) === "antigravity") {
+        recordAntigravityHook({
+          ...event,
+          model: stringValue(rawEvent?.model) || stringValue(rawEvent?.modelName)
+        });
+      }
       await publishEvent(event);
       sendJson(res, 202, { ok: true, event });
       return;
@@ -336,6 +417,13 @@ setInterval(() => {
 
 void flushSinkOutbox();
 
+if (ANTIGRAVITY_REALTIME_ENABLED && ANTIGRAVITY_QUOTA_INTERVAL_MS > 0) {
+  void refreshAntigravityQuota();
+  setInterval(() => {
+    void refreshAntigravityQuota();
+  }, ANTIGRAVITY_QUOTA_INTERVAL_MS).unref();
+}
+
 function normalizeEvent(input = {}) {
   const now = new Date().toISOString();
   const raw = typeof input === "object" && input !== null ? input : { value: input };
@@ -363,6 +451,9 @@ function normalizeEvent(input = {}) {
 }
 
 function inferSource(raw) {
+  if (raw.conversationId || Array.isArray(raw.workspacePaths) || raw.artifactDirectoryPath) {
+    return "antigravity";
+  }
   if (raw.hook_event_name || raw.session_id || raw.transcript_path) {
     return "claude-code";
   }
@@ -502,12 +593,12 @@ function titleForStatus(status) {
   if (status === "needs-attention") return "Waiting for you";
   if (status === "completed") return "Task completed";
   if (status === "near-complete") return "Almost done";
-  if (status === "error") return "Needs review";
+  if (status === "error" || status === "failed") return "Needs review";
   return "Agent update";
 }
 
 function priorityForStatus(status) {
-  if (status === "error") return 3;
+  if (status === "error" || status === "failed") return 3;
   if (status === "needs-attention") return 2;
   return 1;
 }
@@ -556,9 +647,12 @@ async function agentView(options = {}) {
 async function buildAgentView(options = {}) {
   const eventCurrent = recentEvents.at(-1) || null;
   const latestCodexEvent = [...recentEvents].reverse().find((item) => sourceFamily(item.source) === "codex") || null;
+  const latestAntigravityEvent =
+    [...recentEvents].reverse().find((item) => sourceFamily(item.source) === "antigravity") || null;
   const codexRealtime = await loadCodexRealtimeState(latestCodexEvent);
   const claudeRealtime = await loadClaudeRealtimeCached();
-  const realtimes = [codexRealtime, claudeRealtime].filter(Boolean);
+  const antigravityRealtime = await loadAntigravityRealtimeCached(latestAntigravityEvent);
+  const realtimes = [codexRealtime, claudeRealtime, antigravityRealtime].filter(Boolean);
   const autoCurrent = pickAutoCurrent(eventCurrent, realtimes);
   const visibleSlots = pruneAndCapSlots(buildVisibleAgentSlots(recentEvents, realtimes), {
     maxSlots: MAX_DEVICE_SLOTS,
@@ -570,8 +664,8 @@ async function buildAgentView(options = {}) {
     autoCurrent: slotStateFromCurrent(autoCurrent)
   });
   const current = materializeCurrentState(selected, autoCurrent);
-  const usage = await loadUsageSummary(current, claudeRealtime);
-  return { selected, current, visibleSlots, usage, codexRealtime, claudeRealtime };
+  const usage = await loadUsageSummary(current, claudeRealtime, antigravityRealtime);
+  return { selected, current, visibleSlots, usage, codexRealtime, claudeRealtime, antigravityRealtime };
 }
 
 async function compactDeviceState(options = {}) {
@@ -646,12 +740,15 @@ function materializeCurrentState(selected, autoCurrent) {
   };
 }
 
-async function loadUsageSummary(current, claudeRealtime = null) {
+async function loadUsageSummary(current, claudeRealtime = null, antigravityRealtime = null) {
   if (!current?.source || sourceFamily(current.source) === "codex") {
     return await loadCodexUsageSummary();
   }
   if (sourceFamily(current.source) === "claude" && CLAUDE_REALTIME_ENABLED) {
     return await loadClaudeUsageSummary(claudeRealtime);
+  }
+  if (sourceFamily(current.source) === "antigravity" && ANTIGRAVITY_REALTIME_ENABLED) {
+    return await loadAntigravityUsageSummary(antigravityRealtime);
   }
   return buildLocalActivityUsage(current);
 }
@@ -667,6 +764,124 @@ async function loadClaudeRealtimeCached() {
   }
   claudeCache = { ...claudeCache, loadedAt: Date.now(), realtime };
   return realtime;
+}
+
+function recordAntigravityHook(event) {
+  if (!event) return;
+  antigravityCache.hookEvent = event;
+  antigravityCache.hookAt = Date.parse(event.time || "") || Date.now();
+  antigravityCache.loadedAt = 0;
+  agentViewCache = { key: "", at: 0, value: null };
+}
+
+async function refreshAntigravityQuota() {
+  if (antigravityCache.quotaPromise) return antigravityCache.quotaPromise;
+  const preferredModel = antigravityCache.realtime?.model || "";
+  antigravityCache.quotaPromise = fetchAntigravityQuota({ preferredModel })
+    .then((result) => {
+      if (result.conversationId) {
+        antigravityCache.internalConversationId = result.conversationId;
+      }
+      if (result.ok) {
+        antigravityCache.quota = {
+          at: result.at,
+          groups: result.groups,
+          summary: result.summary,
+          error: null
+        };
+      } else {
+        antigravityCache.quota = {
+          ...antigravityCache.quota,
+          error: result.error
+        };
+      }
+      return antigravityCache.quota;
+    })
+    .finally(() => {
+      antigravityCache.quotaPromise = null;
+    });
+  return antigravityCache.quotaPromise;
+}
+
+async function loadAntigravityRealtimeCached(latestAntigravityEvent = null) {
+  if (!ANTIGRAVITY_REALTIME_ENABLED) return null;
+  if (Date.now() - antigravityCache.loadedAt < 1500 && antigravityCache.realtime) {
+    return alignAntigravityRealtimeIdentity(antigravityCache.realtime, latestAntigravityEvent);
+  }
+  let realtime = null;
+  try {
+    realtime = await loadAntigravityRealtimeState({
+      geminiDir: ANTIGRAVITY_GEMINI_DIR,
+      sourcePrefix: CODEX_SOURCE_PREFIX,
+      hookEvent: antigravityCache.hookEvent,
+      hookAt: antigravityCache.hookAt
+    });
+  } catch {
+    realtime = null;
+  }
+  antigravityCache = { ...antigravityCache, loadedAt: Date.now(), realtime };
+  return alignAntigravityRealtimeIdentity(realtime, latestAntigravityEvent);
+}
+
+function alignAntigravityRealtimeIdentity(realtime, latestEvent) {
+  if (!realtime) return null;
+  return {
+    ...realtime,
+    source: latestEvent?.source || realtime.source,
+    task: latestEvent?.task || slugFromPath(realtime.workspace) || realtime.task
+  };
+}
+
+async function loadAntigravityUsageSummary(antigravityRealtime) {
+  if (Date.now() - antigravityCache.todayLoadedAt > USAGE_CACHE_MS) {
+    try {
+      const [today, snapshot] = await Promise.all([
+        antigravityTokensToday({ geminiDir: ANTIGRAVITY_GEMINI_DIR }),
+        readAntigravitySnapshot({ geminiDir: ANTIGRAVITY_GEMINI_DIR })
+      ]);
+      antigravityCache.today = today;
+      antigravityCache.snapshot = snapshot;
+    } catch {
+      antigravityCache.today = 0;
+    }
+    antigravityCache.todayLoadedAt = Date.now();
+  }
+  const realtime = antigravityRealtime || antigravityCache.realtime;
+  const fallbackGen = antigravityCache.snapshot?.activeDetail?.generations?.last || null;
+  const fallbackCtx = fallbackGen?.context;
+  const context =
+    realtime?.context ||
+    (fallbackCtx?.current && fallbackCtx?.max
+      ? { used: fallbackCtx.current, window: fallbackCtx.max }
+      : null);
+  const rawModel =
+    realtime?.model ||
+    fallbackGen?.modelDisplay ||
+    fallbackGen?.modelId ||
+    antigravityCache.hookEvent?.model ||
+    "";
+  const model = antigravityShortModelName(rawModel);
+  const quotaText = antigravityCache.quota.groups
+    ? quotaSummary(antigravityCache.quota.groups, rawModel)
+    : antigravityCache.quota.summary || "";
+  const hasQuota = Boolean(quotaText);
+
+  return usageSummary({
+    today: antigravityCache.today > 0 ? `${abbrevNumber(antigravityCache.today)} tok` : "--",
+    context: context ? `${abbrevNumber(context.used)} / ${abbrevNumber(context.window)}` : "--",
+    quota: hasQuota ? quotaText : model || "--",
+    todayLabel: "TODAY",
+    todayHint: "Antigravity tokens today, no cache reads",
+    contextLabel: "CONTEXT",
+    contextHint: "Current turn context / model window",
+    quotaLabel: hasQuota ? "QUOTA" : "MODEL",
+    quotaHint: hasQuota
+      ? model
+        ? `Model: ${model}`
+        : "Antigravity remaining quota"
+      : "Active Antigravity model",
+    quotaStyle: hasQuota ? "quota" : "text"
+  });
 }
 
 async function loadClaudeUsageSummary(claudeRealtime) {
@@ -726,7 +941,8 @@ async function playDefaultEgg(reason) {
 }
 
 async function statusView() {
-  const { selected, current, visibleSlots, usage, codexRealtime, claudeRealtime } = await agentView({ focus: "auto" });
+  const { selected, current, visibleSlots, usage, codexRealtime, claudeRealtime, antigravityRealtime } =
+    await agentView({ focus: "auto" });
   return {
     ok: true,
     serverTimeMs: Date.now(),
@@ -759,6 +975,17 @@ async function statusView() {
             model: claudeRealtime.model,
             context: claudeRealtime.context,
             project: slugFromPath(claudeRealtime.workspace)
+          }
+        : null,
+      antigravity: antigravityRealtime
+        ? {
+            status: antigravityRealtime.status,
+            time: antigravityRealtime.time,
+            tool: antigravityRealtime.tool,
+            model: antigravityRealtime.model,
+            context: antigravityRealtime.context,
+            project: slugFromPath(antigravityRealtime.workspace),
+            quota: antigravityCache.quota.summary || ""
           }
         : null
     },
@@ -817,6 +1044,8 @@ async function loadCodexUsageSummary() {
   const contextWindow = numberFromValue(latestTokenPayload.info?.model_context_window, 0);
   const primaryUsed = numberFromValue(latestTokenPayload.rate_limits?.primary?.used_percent, null);
   const secondaryUsed = numberFromValue(latestTokenPayload.rate_limits?.secondary?.used_percent, null);
+  const primaryResetsAt = numberFromValue(latestTokenPayload.rate_limits?.primary?.resets_at, null);
+  const secondaryResetsAt = numberFromValue(latestTokenPayload.rate_limits?.secondary?.resets_at, null);
 
   const todayTokens = dailyTotalTokens || totalTokens;
   const usage = usageSummary({
@@ -824,7 +1053,7 @@ async function loadCodexUsageSummary() {
     context: contextWindow > 0 && lastTurnTokens > 0
       ? `${abbrevNumber(lastTurnTokens)} / ${abbrevNumber(contextWindow)}`
       : "--",
-    quota: formatQuotaLabel(primaryUsed, secondaryUsed),
+    quota: formatQuotaLabel(primaryUsed, secondaryUsed, primaryResetsAt, secondaryResetsAt),
     todayLabel: "TODAY",
     todayHint: "Today total in this workspace",
     contextLabel: "CONTEXT",
@@ -937,10 +1166,18 @@ function abbrevNumber(value) {
   return String(value);
 }
 
-function formatQuotaLabel(primaryUsed, secondaryUsed) {
+function formatQuotaLabel(primaryUsed, secondaryUsed, primaryResetsAt = null, secondaryResetsAt = null) {
   const parts = [];
-  if (primaryUsed !== null) parts.push(`5H ${Math.max(0, 100 - Math.round(primaryUsed))}%`);
-  if (secondaryUsed !== null) parts.push(`WK ${Math.max(0, 100 - Math.round(secondaryUsed))}%`);
+  if (primaryUsed !== null) {
+    const pct = Math.max(0, 100 - Math.round(primaryUsed));
+    const cd = formatResetCountdown(primaryResetsAt);
+    parts.push(cd ? `5H ${pct}% (${cd})` : `5H ${pct}%`);
+  }
+  if (secondaryUsed !== null) {
+    const pct = Math.max(0, 100 - Math.round(secondaryUsed));
+    const cd = formatResetCountdown(secondaryResetsAt);
+    parts.push(cd ? `WK ${pct}% (${cd})` : `WK ${pct}%`);
+  }
   return parts.length ? parts.join(" ") : "--";
 }
 
@@ -1150,6 +1387,7 @@ function sourceFamily(source) {
   const text = String(source || "").toLowerCase();
   if (text.includes("claude")) return "claude";
   if (text.includes("codex")) return "codex";
+  if (text.includes("antigravity") || text === "agy" || text.endsWith("-agy")) return "antigravity";
   if (text.includes("hermes")) return "hermes";
   if (text.includes("openclaw")) return "openclaw";
   return "";
@@ -1472,6 +1710,13 @@ function numberFromEnv(name, fallback) {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
+function nonNegativeNumberFromEnv(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === null || String(raw).trim() === "") return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
 function numberFromValue(value, fallback) {
   if (value === null || value === undefined || value === "") return fallback;
   const number = Number(value);
@@ -1481,10 +1726,11 @@ function numberFromValue(value, fallback) {
 function isAuthorized(req, url) {
   if (!INBOUND_TOKEN) return true;
   const headerToken = stringValue(req.headers["x-pet-bridge-token"]);
+  const probeHeaderToken = stringValue(req.headers["x-probe-token"]);
   const auth = stringValue(req.headers.authorization);
   const bearerToken = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
-  const queryToken = url.searchParams.get("token") || "";
-  return [headerToken, bearerToken, queryToken].includes(INBOUND_TOKEN);
+  const queryToken = url.searchParams.get("token") || url.searchParams.get("t") || "";
+  return [headerToken, probeHeaderToken, bearerToken, queryToken].includes(INBOUND_TOKEN);
 }
 
 function isLoopbackHost(host) {

@@ -55,7 +55,7 @@ function priorityForStatus(status) {
   if (status === "needs-attention") return 0;
   if (ACTIVE_STATUSES.has(status)) return 1;
   if (status === "completed") return 2;
-  if (status === "error") return 3;
+  if (status === "error" || status === "failed") return 3;
   return 4;
 }
 

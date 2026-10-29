@@ -136,6 +136,7 @@ function sourceFamily(source) {
   const text = String(source || "").toLowerCase();
   if (text.includes("codex")) return "codex";
   if (text.includes("claude")) return "claude";
+  if (text.includes("antigravity") || text === "agy" || text.endsWith("-agy")) return "antigravity";
   if (text.includes("hermes")) return "hermes";
   if (text.includes("openclaw")) return "openclaw";
   return "";
