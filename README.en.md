@@ -3,10 +3,11 @@
 English · [中文](README.md)
 
 A desk companion on the Waveshare `ESP32-S3-RLCD-4.2` reflective LCD. It shows
-what your coding agents are doing (Codex, Claude Code, Hermes, OpenClaw). It is
-also a clock, shows the board's battery and room climate, and can play 1-bit
-videos as an easter egg. On the Mac, a small bridge collects agent status, and
-a web dashboard and a menu bar app let you check and control everything.
+what your coding agents are doing (Codex, Claude Code, Google Antigravity,
+Hermes, OpenClaw). It is also a clock, shows the board's battery and room
+climate, and can play 1-bit videos as an easter egg. On the Mac, a small bridge
+collects agent status, and a web dashboard and a menu bar app let you check and
+control everything.
 
 This is a personal fork of [xyuuii/waveshare-rlcd-agent-pet](https://github.com/xyuuii/waveshare-rlcd-agent-pet),
 focused on clearer text and lower power while keeping the screen and Wi-Fi on.
@@ -16,13 +17,21 @@ The original project, bridge and interactive features remain the foundation.
 
 - Redesigned overview, usage and clock pages with clearer English text, using
   several prepared bitmap font sizes, including glyphs derived from Inter.
-- Minute-level clocks and a static pet on the normal overview avoid continuous
-  animation; the on-demand easter egg remains available.
+- Split-stage overview layout with a fused upper hero stage (large `50pt` clock,
+  7-tier adaptive bold status typography, dark source pill, and active model
+  subtitle) and a borderless 2-column bottom section (`TODAY` tokens + `CONTEXT`
+  bar on the left; stacked `5H` + `Week` quota bars with reset countdowns on the
+  right). Minute-level clocks avoid continuous animation; the on-demand easter
+  egg remains available.
+- Full **Google Antigravity** integration: lifecycle hooks, local session
+  transcript & SQLite reader for today's non-cached tokens and context window,
+  and background `agy` CLI quota polling with reset countdowns.
 - Automatic light sleep and dynamic CPU frequency scaling, enabled by a
   separately rebuilt Arduino-ESP32 2.0.17 / ESP-IDF 4.4.7 SDK. Wi-Fi stays
   connected, using maximum modem power save outside animation streaming.
-- Adaptive bridge polling (about 3 seconds when active, 10 seconds when quiet),
-  skipped unchanged display transfers, and SHTC3 sleep between 30-second samples.
+- Adaptive bridge polling (about 3 seconds when active, 10 seconds when quiet;
+  passive quota countdown ticks do not reset the idle timer), skipped unchanged
+  display transfers, and SHTC3 sleep between 30-second samples.
 
 ### Observed USB current
 
@@ -59,12 +68,15 @@ the latest layout adjustments. A reflective panel also looks different in a room
 
 ## What the board shows
 
-- **Overview:** which agent is active and what it is doing (thinking, using a
-  tool, searching, waiting for you, done), the task, a static pixel pet, time,
-  battery, temperature and humidity, Wi-Fi and
-  bridge status.
+- **Overview:** upper hero stage with large time, active agent source pill,
+  adaptive bold status (thinking, using a tool, searching, waiting for you,
+  done), bridge status and active model; lower 2-column metrics with today's
+  tokens, context window progress bar, and stacked 5-hour / weekly quota bars
+  with reset countdowns; top bar with Wi-Fi signal bars, centered room climate,
+  battery voltage and percentage.
 - **Usage:** today's tokens, the context window and the 5-hour / weekly quota
-  for Codex, and today's tokens, context and model for Claude Code.
+  (with reset countdowns) for Codex and Google Antigravity, and today's tokens,
+  context and model for Claude Code.
 - **Clock:** a full-screen clock in seven faces, with the date, room climate
   and the agents' status. It keeps time from the board's RTC (stored in UTC)
   with the Mac's time zone and daylight saving rules.
@@ -100,7 +112,8 @@ the latest layout adjustments. A reflective panel also looks different in a room
 
 - **Bridge** (`bridge/codex-pet-bridge`): collects agent status and serves the
   board. It follows Codex sessions, reads Claude Code's session transcripts
-  (no Claude configuration needed), receives Hermes hooks and the OpenClaw
+  (no Claude configuration needed), receives Google Antigravity hooks and reads
+  its local transcripts & `agy` quota, receives Hermes hooks and the OpenClaw
   plugin, and runs `agent-sync` for the rest. It runs as two LaunchAgents.
 - **Dashboard** at `http://127.0.0.1:17366/ui/`: agents, board telemetry,
   clock face picker, time zone, and the easter-egg studio.
@@ -132,6 +145,7 @@ flowchart LR
   subgraph Mac
     CX["Codex sessions"] --> B["codex-pet-bridge :17366"]
     CC["Claude Code transcripts"] --> B
+    AG["Google Antigravity hooks & transcripts"] --> B
     HM["Hermes hooks"] --> B
     OC["OpenClaw plugin"] --> B
     AS["agent-sync"] --> B

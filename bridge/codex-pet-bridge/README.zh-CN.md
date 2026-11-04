@@ -2,7 +2,7 @@
 
 # Codex Pet Bridge
 
-**面向 Codex、Claude Code、桌面宠物和小智设备的本地状态桥。**
+**面向 Codex、Claude Code、Google Antigravity、桌面宠物和小智设备的本地状态桥。**
 
 一个小小的本地中枢，让每个 Agent 的状态都能被看见。
 
@@ -46,6 +46,7 @@ flowchart LR
   CC["Claude Code CLI"] -->|"hooks: command/http"| Bridge["codex-pet-bridge"]
   CD["Claude Desktop / Claude Code"] -->|"MCP tool: pet_emit_event"| Bridge
   CX["Codex CLI / Desktop"] -->|"notify wrapper / plugin / App Server adapter"| Bridge
+  AG["Google Antigravity"] -->|"hooks + transcript / SQLite / agy quota"| Bridge
   OC["OpenClaw or custom agents"] -->|"POST /events"| Bridge
   Bridge -->|"SSE: GET /stream"| Pet["Desktop Pet UI"]
   Bridge -->|"GET /esp32/poll"| ESP["ESP32 / 小智屏幕"]

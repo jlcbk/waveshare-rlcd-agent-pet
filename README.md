@@ -2,17 +2,18 @@
 
 [English](README.en.md) · 中文
 
-一块放在桌上的反射式屏幕（Waveshare `ESP32-S3-RLCD-4.2`），用来显示你的编程智能体在做什么：Codex、Claude Code、Hermes、OpenClaw。它同时是一块时钟，显示电量和室内温湿度，还藏了一个能播放 1-bit 视频的彩蛋。Mac 上有一个小小的 bridge 负责收集状态，另有网页控制台和菜单栏 App 用来查看和控制。
+一块放在桌上的反射式屏幕（Waveshare `ESP32-S3-RLCD-4.2`），用来显示你的编程智能体在做什么：Codex、Claude Code、Google Antigravity、Hermes、OpenClaw。它同时是一块时钟，显示电量和室内温湿度，还藏了一个能播放 1-bit 视频的彩蛋。Mac 上有一个小小的 bridge 负责收集状态，另有网页控制台和菜单栏 App 用来查看和控制。
 
 这是基于 [xyuuii/waveshare-rlcd-agent-pet](https://github.com/xyuuii/waveshare-rlcd-agent-pet) 的个人 fork。我们希望它在屏幕常亮、Wi-Fi 保持连接的情况下，文字更易读，同时尽量降低耗电；原项目的 bridge 和交互能力仍是这个版本的基础。
 
 ## 这个版本做了什么
 
 - 重新调整概览、用量和时钟三个页面，使用多种预先准备的点阵字号，包括由 Inter 生成的字形，让英文信息更易读。
-- 常态页面取消秒显示，概览页去掉宠物图标并拓宽信息区；需要时仍可主动播放彩蛋。
-- 概览页显示电池电压、按 3.60–4.10 V 工作区间估算的电量，以及竖条 Wi-Fi 信号。低电压持续确认后进入定时唤醒的深睡眠保护。
+- 概览页采用上下分舞台与无边框双栏布局：上半区融合大号时间（`50pt`）、7 级字号自适应粗体状态字、深色智能体来源胶囊与当前模型信息；下半区左栏展示今日 Token 与上下文进度条，右栏堆叠展示 5 小时与每周额度进度条及重置倒计时。常态页面取消秒显示，需要时仍可主动播放彩蛋。
+- 新增 **Google Antigravity** 全链路接入：自动配置生命周期 Hook，读取本地会话记录计算今日非缓存 Token 与上下文窗口，并后台查询 `agy` 模型额度与重置倒计时。
+- 概览页顶栏显示竖条 Wi-Fi 信号、动态居中的室内温湿度，以及电池电压和按 3.60–4.10 V 工作区间估算的电量。低电压持续确认后进入定时唤醒的深睡眠保护。
 - 通过单独重编的 Arduino-ESP32 2.0.17 / ESP-IDF 4.4.7 SDK 启用自动轻睡眠和动态调频。Wi-Fi 保持连接，非动画传输时使用更强的无线省电模式。
-- bridge 在活跃时约 3 秒、安静时约 10 秒轮询一次；相同画面不重复发送到屏幕；SHTC3 采样后休眠，约 30 秒采样一次。
+- bridge 在活跃时约 3 秒、安静时约 10 秒轮询一次（被动额度重置倒计时跳变不会打断空闲降频）；相同画面不重复发送到屏幕；SHTC3 采样后休眠，约 30 秒采样一次。
 
 ### 一次实机电流观察
 
@@ -39,8 +40,8 @@
 
 ## 板子上显示什么
 
-- **概览**：哪个智能体在活动、在做什么（思考、调用工具、搜索、等你处理、完成），任务名、用量，以及时间、电压、电量、温湿度、Wi-Fi 和 bridge 状态。
-- **用量**：Codex 的今日 token、上下文窗口、5 小时和每周额度；Claude Code 的今日 token、上下文和模型。
+- **概览**：上半区主舞台融合大号时钟、哪个智能体在活动及其当前状态（思考、调用工具、搜索、等你处理、完成）、bridge 状态与当前模型；下半区双栏展示今日 Token、上下文窗口进度条，以及 5 小时 / 每周额度进度条与重置倒计时；顶栏显示 Wi-Fi 信号、居中温湿度、电压与电量。
+- **用量**：Codex 与 Google Antigravity 的今日 Token、上下文窗口、5 小时 / 每周额度及重置倒计时；Claude Code 的今日 Token、上下文和模型。
 - **时钟**：七种表盘的全屏时钟，附带日期、室内温湿度和智能体状态。时间来自板载 RTC（按 UTC 保存），时区和夏令时规则跟随 Mac。
 
 <table>
@@ -72,7 +73,7 @@
 
 ## Mac 端
 
-- **Bridge**（`bridge/codex-pet-bridge`）：收集智能体状态，也是板子的数据来源。它跟踪 Codex 会话，读取 Claude Code 的会话记录（无需修改 Claude 的配置），接收 Hermes hook 和 OpenClaw 插件的事件，其余情况交给 `agent-sync`。以两个开机启动项（LaunchAgent）的形式运行。
+- **Bridge**（`bridge/codex-pet-bridge`）：收集智能体状态，也是板子的数据来源。它跟踪 Codex 会话，读取 Claude Code 的会话记录（无需修改 Claude 的配置），接收 Google Antigravity hook 并读取其本地会话记录与 `agy` 额度，接收 Hermes hook 和 OpenClaw 插件的事件，其余情况交给 `agent-sync`。以两个开机启动项（LaunchAgent）的形式运行。
 - **控制台** `http://127.0.0.1:17366/ui/`：智能体状态、板子遥测、表盘选择、时区和彩蛋工坊。
 - **PetBar 菜单栏 App**：一眼看到同样的状态。在菜单里可以切换板子页面和表盘、播放彩蛋、打开控制台、重启 bridge。
 
@@ -91,6 +92,7 @@ flowchart LR
   subgraph Mac
     CX["Codex 会话"] --> B["codex-pet-bridge :17366"]
     CC["Claude Code 会话记录"] --> B
+    AG["Google Antigravity hook 与会话库"] --> B
     HM["Hermes hook"] --> B
     OC["OpenClaw 插件"] --> B
     AS["agent-sync"] --> B

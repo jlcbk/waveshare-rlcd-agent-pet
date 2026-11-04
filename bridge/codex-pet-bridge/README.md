@@ -2,7 +2,7 @@
 
 # Codex Pet Bridge
 
-**Local-first status bridge for Codex, Claude Code, desktop pets, and XiaoZhi devices.**
+**Local-first status bridge for Codex, Claude Code, Google Antigravity, desktop pets, and XiaoZhi devices.**
 
 One small hub. Every agent state, visible.
 
@@ -46,6 +46,7 @@ flowchart LR
   CC["Claude Code CLI"] -->|"hooks: command/http"| Bridge["codex-pet-bridge"]
   CD["Claude Desktop / Claude Code"] -->|"MCP tool: pet_emit_event"| Bridge
   CX["Codex CLI / Desktop"] -->|"notify wrapper / plugin / App Server adapter"| Bridge
+  AG["Google Antigravity"] -->|"hooks + transcript / SQLite / agy quota"| Bridge
   OC["OpenClaw or custom agents"] -->|"POST /events"| Bridge
   Bridge -->|"SSE: GET /stream"| Pet["Desktop Pet UI"]
   Bridge -->|"GET /esp32/poll"| ESP["ESP32 / XiaoZhi display"]

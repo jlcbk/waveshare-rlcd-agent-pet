@@ -66,7 +66,7 @@ AgentState codexAgent(const char* detail, AgentStatus status) {
   agent.updatedAt = "2026-09-28T09:42:00Z";
   agent.usageToday = "812k tok";
   agent.usageContext = "189k / 258k";
-  agent.usageQuota = "5H 88% WK 92%";
+  agent.usageQuota = "5H 88%(2h14m) WK 92%(5d18h)";
   agent.focusCount = 3;
   return agent;
 }
