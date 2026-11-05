@@ -111,7 +111,7 @@ void pollOnce() {
         gSnapshot.serverOffsetMs = commands.serverTimeMs - static_cast<int64_t>(midpoint);
         gSnapshot.serverOffsetKnown = true;
       }
-    } else {
+    } else if (gFailStreak >= 2 || gSnapshot.lastPollOkAtMs == 0) {
       gSnapshot.agent.connected = false;
     }
   }

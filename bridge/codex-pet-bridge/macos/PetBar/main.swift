@@ -407,6 +407,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var actionMessageAt = Date.distantPast
     private var serverOffset: TimeInterval = 0
     private var unauthorizedStreak = 0
+    private var failureStreak = 0
     private let defaults = UserDefaults.standard
     private let bridgeLabel = "net.vcxzvfe.codex-pet-bridge"
 
@@ -452,6 +453,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.status = decoded
                     self.lastError = nil
                     self.unauthorizedStreak = 0
+                    self.failureStreak = 0
                     if let serverMs = decoded.serverTimeMs {
                         self.serverOffset = serverMs / 1000 - Date().timeIntervalSince1970
                     }
@@ -459,11 +461,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.lastError = "看不懂 Bridge 的回复（版本太旧？）"
                 }
             case .failure(let error):
+                self.failureStreak += 1
                 if let bridgeError = error as? BridgeError, case .unauthorized = bridgeError {
                     self.unauthorizedStreak += 1
                     client.reloadToken()
                 }
-                self.status = nil
+                if self.failureStreak >= 3 || self.unauthorizedStreak > 0 {
+                    self.status = nil
+                }
                 self.lastError = error.localizedDescription
             }
             // The open menu is not rebuilt under the pointer; the next open shows fresh data.

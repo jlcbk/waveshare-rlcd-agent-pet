@@ -369,23 +369,49 @@ export function decodeWorkspaceMeta(buffer, depth = 0) {
 export const STEP_TYPE_LABELS = { 14: "user_input", 15: "generation", 132: "tool_call" };
 
 // ---------------------------------------------------------------------------
-// Conversation reading
+// Conversation reading (with incremental per-DB cache & in-flight dedup)
 // ---------------------------------------------------------------------------
 
-/**
- * Read one conversation DB (read-only). Resolves null when the DB is missing,
- * locked or corrupt. Rows whose blob fails to decode are skipped and counted
- * in generations.skipped.
- */
-export async function readConversation(dbPath) {
+const conversationCache = new Map();
+const conversationInFlight = new Map();
+
+function dbFingerprint(dbPath) {
+  try {
+    const st = statSync(dbPath);
+    let walPart = "0:0";
+    try {
+      const walSt = statSync(`${dbPath}-wal`);
+      if (walSt.isFile()) {
+        walPart = `${walSt.mtimeMs}:${walSt.size}`;
+      }
+    } catch {
+      // no WAL sidecar
+    }
+    return `${st.mtimeMs}:${st.size}|${walPart}`;
+  } catch {
+    return "";
+  }
+}
+
+async function readConversationUncached(dbPath, fingerprint) {
+  const cached = conversationCache.get(dbPath) || null;
   const stepRows = await sqliteQuery(
     dbPath,
     "SELECT idx, step_type, status FROM steps ORDER BY idx"
   );
   if (stepRows === null) return null;
+
+  const canIncremental =
+    cached &&
+    stepRows.length >= cached.stepTotal &&
+    Number.isInteger(cached.lastMetaIdx);
+  const minMetaIdx = canIncremental ? cached.lastMetaIdx : -1;
+
   const metaRows = await sqliteQuery(
     dbPath,
-    "SELECT idx, hex(data) AS data_hex FROM gen_metadata ORDER BY idx"
+    minMetaIdx >= 0
+      ? `SELECT idx, hex(data) AS data_hex FROM gen_metadata WHERE idx > ${minMetaIdx} ORDER BY idx`
+      : "SELECT idx, hex(data) AS data_hex FROM gen_metadata ORDER BY idx"
   );
   if (metaRows === null) return null;
 
@@ -400,11 +426,19 @@ export async function readConversation(dbPath) {
     lastStep = { idx, stepType, status };
   }
 
-  const totals = { input: 0, cacheRead: 0, thinking: 0, output: 0, totalOutput: 0 };
-  let count = 0;
-  let skipped = 0;
-  let lastGen = null;
+  const totals = canIncremental
+    ? { ...cached.totals }
+    : { input: 0, cacheRead: 0, thinking: 0, output: 0, totalOutput: 0 };
+  let count = canIncremental ? cached.count : 0;
+  let skipped = canIncremental ? cached.skipped : 0;
+  let lastGen = canIncremental ? cached.lastGen : null;
+  let lastMetaIdx = canIncremental ? cached.lastMetaIdx : -1;
+
   for (const row of metaRows) {
+    const rowIdx = Number(row.idx);
+    if (Number.isInteger(rowIdx) && rowIdx > lastMetaIdx) {
+      lastMetaIdx = rowIdx;
+    }
     if (row.data_hex == null) {
       skipped++;
       continue;
@@ -423,20 +457,61 @@ export async function readConversation(dbPath) {
     }
   }
 
-  let workspace = "";
-  const trajRows = await sqliteQuery(
-    dbPath,
-    "SELECT hex(data) AS data_hex FROM trajectory_metadata_blob LIMIT 1"
-  );
-  if (trajRows?.[0]?.data_hex) {
-    workspace = decodeWorkspaceMeta(Buffer.from(String(trajRows[0].data_hex), "hex"));
+  let workspace = canIncremental && cached.workspace ? cached.workspace : "";
+  if (!workspace) {
+    const trajRows = await sqliteQuery(
+      dbPath,
+      "SELECT hex(data) AS data_hex FROM trajectory_metadata_blob LIMIT 1"
+    );
+    if (trajRows?.[0]?.data_hex) {
+      workspace = decodeWorkspaceMeta(Buffer.from(String(trajRows[0].data_hex), "hex"));
+    }
   }
 
-  return {
+  const result = {
     steps: { total: stepRows.length, counts, last: lastStep },
-    generations: { count, skipped, last: lastGen, totals },
+    generations: { count, skipped, last: lastGen, totals: { ...totals } },
     workspace
   };
+
+  if (fingerprint) {
+    conversationCache.set(dbPath, {
+      fingerprint,
+      stepTotal: stepRows.length,
+      lastMetaIdx,
+      totals: { ...totals },
+      count,
+      skipped,
+      lastGen,
+      workspace,
+      result
+    });
+  }
+  return result;
+}
+
+/**
+ * Read one conversation DB (read-only). Resolves null when the DB is missing,
+ * locked or corrupt. Rows whose blob fails to decode are skipped and counted
+ * in generations.skipped. Uses incremental row caching keyed by DB file state.
+ */
+export async function readConversation(dbPath) {
+  const fingerprint = dbFingerprint(dbPath);
+  if (!fingerprint) return null;
+  const cached = conversationCache.get(dbPath);
+  if (cached && cached.fingerprint === fingerprint) {
+    return cached.result;
+  }
+  const existing = conversationInFlight.get(dbPath);
+  if (existing) return existing;
+
+  const promise = readConversationUncached(dbPath, fingerprint).finally(() => {
+    if (conversationInFlight.get(dbPath) === promise) {
+      conversationInFlight.delete(dbPath);
+    }
+  });
+  conversationInFlight.set(dbPath, promise);
+  return promise;
 }
 
 export async function readSnapshot({ roots, geminiDir } = {}) {

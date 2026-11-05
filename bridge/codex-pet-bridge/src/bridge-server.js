@@ -115,8 +115,10 @@ let claudeCache = { loadedAt: 0, realtime: null, today: 0, todayLoadedAt: 0 };
 let antigravityCache = {
   loadedAt: 0,
   realtime: null,
+  realtimePromise: null,
   today: 0,
   todayLoadedAt: 0,
+  todayPromise: null,
   snapshot: null,
   hookEvent: null,
   hookAt: 0,
@@ -363,7 +365,10 @@ const server = http.createServer(async (req, res) => {
           ? translateHook(hookEventParam, body)
           : body;
       const event = normalizeEvent(rawEvent);
-      if (sourceFamily(event.source) === "antigravity") {
+      if (
+        sourceFamily(event.source) === "antigravity" &&
+        ((hookEventParam && HOOK_EVENTS.has(hookEventParam)) || HOOK_EVENTS.has(event.type))
+      ) {
         recordAntigravityHook({
           ...event,
           model: stringValue(rawEvent?.model) || stringValue(rawEvent?.modelName)
@@ -634,14 +639,31 @@ async function ackAllNotifications() {
 
 // The board, the dashboard and the menu bar app all poll; one view per focus
 // per 750 ms keeps sqlite/tail calls down without making the board feel late.
-let agentViewCache = { key: "", at: 0, value: null };
+let agentViewCache = { key: "", at: 0, value: null, promise: null, promiseKey: "" };
 
 async function agentView(options = {}) {
   const key = `${options.focus || "auto"}|${recentEvents.length}|${recentEvents.at(-1)?.id || ""}`;
-  if (agentViewCache.key === key && Date.now() - agentViewCache.at < 750) return agentViewCache.value;
-  const value = await buildAgentView(options);
-  agentViewCache = { key, at: Date.now(), value };
-  return value;
+  if (agentViewCache.key === key && Date.now() - agentViewCache.at < 750 && agentViewCache.value) {
+    return agentViewCache.value;
+  }
+  if (agentViewCache.promise && agentViewCache.promiseKey === key) {
+    return agentViewCache.promise;
+  }
+  const promise = buildAgentView(options)
+    .then((value) => {
+      agentViewCache = { key, at: Date.now(), value, promise: null, promiseKey: "" };
+      return value;
+    })
+    .catch((err) => {
+      if (agentViewCache.promise === promise) {
+        agentViewCache.promise = null;
+        agentViewCache.promiseKey = "";
+      }
+      throw err;
+    });
+  agentViewCache.promise = promise;
+  agentViewCache.promiseKey = key;
+  return promise;
 }
 
 async function buildAgentView(options = {}) {
@@ -771,7 +793,8 @@ function recordAntigravityHook(event) {
   antigravityCache.hookEvent = event;
   antigravityCache.hookAt = Date.parse(event.time || "") || Date.now();
   antigravityCache.loadedAt = 0;
-  agentViewCache = { key: "", at: 0, value: null };
+  antigravityCache.realtimePromise = null;
+  agentViewCache = { key: "", at: 0, value: null, promise: null, promiseKey: "" };
 }
 
 async function refreshAntigravityQuota() {
@@ -805,21 +828,27 @@ async function refreshAntigravityQuota() {
 
 async function loadAntigravityRealtimeCached(latestAntigravityEvent = null) {
   if (!ANTIGRAVITY_REALTIME_ENABLED) return null;
-  if (Date.now() - antigravityCache.loadedAt < 1500 && antigravityCache.realtime) {
+  if (Date.now() - antigravityCache.loadedAt < 1500 && antigravityCache.loadedAt > 0) {
     return alignAntigravityRealtimeIdentity(antigravityCache.realtime, latestAntigravityEvent);
   }
-  let realtime = null;
-  try {
-    realtime = await loadAntigravityRealtimeState({
+  if (!antigravityCache.realtimePromise) {
+    antigravityCache.realtimePromise = loadAntigravityRealtimeState({
       geminiDir: ANTIGRAVITY_GEMINI_DIR,
       sourcePrefix: CODEX_SOURCE_PREFIX,
       hookEvent: antigravityCache.hookEvent,
       hookAt: antigravityCache.hookAt
-    });
-  } catch {
-    realtime = null;
+    })
+      .catch(() => null)
+      .then((realtime) => {
+        antigravityCache.realtime = realtime;
+        antigravityCache.loadedAt = Date.now();
+        return realtime;
+      })
+      .finally(() => {
+        antigravityCache.realtimePromise = null;
+      });
   }
-  antigravityCache = { ...antigravityCache, loadedAt: Date.now(), realtime };
+  const realtime = await antigravityCache.realtimePromise;
   return alignAntigravityRealtimeIdentity(realtime, latestAntigravityEvent);
 }
 
@@ -832,21 +861,41 @@ function alignAntigravityRealtimeIdentity(realtime, latestEvent) {
   };
 }
 
-async function loadAntigravityUsageSummary(antigravityRealtime) {
-  if (Date.now() - antigravityCache.todayLoadedAt > USAGE_CACHE_MS) {
-    try {
-      const [today, snapshot] = await Promise.all([
-        antigravityTokensToday({ geminiDir: ANTIGRAVITY_GEMINI_DIR }),
-        readAntigravitySnapshot({ geminiDir: ANTIGRAVITY_GEMINI_DIR })
-      ]);
+async function refreshAntigravityTodayUsage(needSnapshot = false) {
+  if (antigravityCache.todayPromise) return antigravityCache.todayPromise;
+  antigravityCache.todayPromise = Promise.all([
+    antigravityTokensToday({ geminiDir: ANTIGRAVITY_GEMINI_DIR }),
+    needSnapshot ? readAntigravitySnapshot({ geminiDir: ANTIGRAVITY_GEMINI_DIR }) : Promise.resolve(null)
+  ])
+    .then(([today, snapshot]) => {
       antigravityCache.today = today;
-      antigravityCache.snapshot = snapshot;
-    } catch {
-      antigravityCache.today = 0;
-    }
-    antigravityCache.todayLoadedAt = Date.now();
-  }
+      if (snapshot) antigravityCache.snapshot = snapshot;
+      antigravityCache.todayLoadedAt = Date.now();
+    })
+    .catch(() => {
+      if (!antigravityCache.todayLoadedAt) antigravityCache.today = 0;
+      antigravityCache.todayLoadedAt = Date.now();
+    })
+    .finally(() => {
+      antigravityCache.todayPromise = null;
+    });
+  return antigravityCache.todayPromise;
+}
+
+async function loadAntigravityUsageSummary(antigravityRealtime) {
   const realtime = antigravityRealtime || antigravityCache.realtime;
+  const needSnapshot = !realtime?.model && !realtime?.context;
+  const stale =
+    antigravityCache.todayLoadedAt === 0 ||
+    Date.now() - antigravityCache.todayLoadedAt > USAGE_CACHE_MS ||
+    (needSnapshot && !antigravityCache.snapshot);
+  if (stale) {
+    if (antigravityCache.todayLoadedAt === 0 || USAGE_CACHE_MS === 0) {
+      await refreshAntigravityTodayUsage(needSnapshot);
+    } else {
+      void refreshAntigravityTodayUsage(needSnapshot);
+    }
+  }
   const fallbackGen = antigravityCache.snapshot?.activeDetail?.generations?.last || null;
   const fallbackCtx = fallbackGen?.context;
   const context =
