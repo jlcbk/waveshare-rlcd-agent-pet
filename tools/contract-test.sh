@@ -158,7 +158,7 @@ CPP
 
 CXXFLAGS=(-std=gnu++17 -O0 -w -DPIO_UNIT_TESTING -I"$FW/include" -I"$ARDUINOJSON_DIR/src")
 SOURCES=("$FW/src/bridge_client.cpp" "$FW/src/clock_model.cpp" "$FW/src/anim_codec.cpp" "$FW/src/pet_state_machine.cpp"
-         "$FW/src/focus_controller.cpp" "$FW/src/time_keeper.cpp")
+         "$FW/src/focus_controller.cpp" "$FW/src/time_keeper.cpp" "$FW/src/poll_policy.cpp")
 c++ "${CXXFLAGS[@]}" "$WORK/harness.cpp" "${SOURCES[@]}" -o "$WORK/harness"
 c++ "${CXXFLAGS[@]}" "$WORK/decode.cpp" "$FW/src/anim_codec.cpp" -o "$WORK/decode"
 

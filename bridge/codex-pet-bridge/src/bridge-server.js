@@ -127,7 +127,7 @@ let antigravityCache = {
   quotaPromise: null
 };
 const settingsStore = new SettingsStore(SETTINGS_PATH);
-const deviceRegistry = new DeviceRegistry();
+const deviceRegistry = new DeviceRegistry({ onlineWindowMs: 180_000 });
 const animStore = new AnimStore(ANIM_DIR, { maxBytes: MAX_UPLOAD_BYTES });
 const eggController = new EggController();
 const execFileAsync = promisify(execFile);
@@ -398,6 +398,9 @@ const server = http.createServer(async (req, res) => {
     sendJson(res, status, { ok: false, error: error.message || String(error) });
   }
 });
+
+server.keepAliveTimeout = 30000;
+server.headersTimeout = 35000;
 
 server.listen(PORT, HOST, () => {
   console.log(`codex-pet-bridge listening on http://${HOST}:${PORT}`);
@@ -1735,8 +1738,12 @@ async function readJson(req) {
 }
 
 function sendJson(res, status, value) {
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
-  res.end(JSON.stringify(value, null, 2));
+  const payload = JSON.stringify(value, null, 2);
+  res.writeHead(status, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": Buffer.byteLength(payload)
+  });
+  res.end(payload);
 }
 
 function setCors(res) {

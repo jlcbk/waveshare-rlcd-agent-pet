@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "poll_policy.h"
+
 namespace {
 
 constexpr const char* kFocusHint = "BOOT page  HOLD/KEY agent";
@@ -448,9 +450,12 @@ DisplayState deriveDisplayState(const AgentState& agent,
                                 const EnvironmentState& environment,
                                 ScreenPage page,
                                 const NetworkState& network,
-                                const DisplaySettings& settings) {
+                                const DisplaySettings& settings,
+                                SleepPacingMode pacingMode) {
   DisplayState view{};
   view.page = page;
+  view.pacingMode = pacingMode;
+  view.pacingLabel = sleepPacingLabel(pacingMode);
   view.sourceLabel = sourceLabelFor(agent.source, agent.sourceRaw);
   view.taskLine = agent.task.empty() ? "Waiting for next task" : agent.task;
   view.statusLabel = statusLabel(agent.status);

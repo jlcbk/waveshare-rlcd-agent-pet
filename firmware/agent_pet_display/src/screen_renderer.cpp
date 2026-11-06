@@ -388,10 +388,10 @@ void renderOverviewPage(const DisplayState& display, const std::string& batteryL
 
   gU8g2->drawHLine(12, 272, 376);
   gU8g2->setFont(u8g2_font_helvB10_tr);
-  gU8g2->drawStr(12, 280, clipTextToPixelWidth(display.footerMessage, 310).c_str());
-  char pageLabel[16];
-  snprintf(pageLabel, sizeof(pageLabel), "P%d/%d", screenPageNumber(display.page), kScreenPageCount);
-  gU8g2->drawStr(388 - gU8g2->getStrWidth(pageLabel), 280, pageLabel);
+  const char* pacingLabel = display.pacingLabel.empty() ? "FAST" : display.pacingLabel.c_str();
+  const int pacingX = 388 - gU8g2->getStrWidth(pacingLabel);
+  gU8g2->drawStr(pacingX, 280, pacingLabel);
+  gU8g2->drawStr(12, 280, clipTextToPixelWidth(display.footerMessage, pacingX - 20).c_str());
 }
 
 void renderUsagePage(const DisplayState& display) {
@@ -477,6 +477,10 @@ void ScreenRenderer::invalidate() {
   gHasFrame = false;
 }
 
+void ScreenRenderer::setPanelHighPowerMode(bool highPower) {
+  gLcd.setHighPowerMode(highPower);
+}
+
 void ScreenRenderer::render(const DisplayState& display, const PowerState& power) {
   if (!gU8g2) {
     return;
@@ -552,13 +556,14 @@ void ScreenRenderer::render(const DisplayState& display, const PowerState& power
   const char* footerLabel = display.page == ScreenPage::Usage ? "KEYS" : "LIVE";
   gU8g2->drawHLine(8, footerY, kLcdWidth - 16);
   drawLabelChip(12, footerY + 6, chipWidthForLabel(footerLabel, 32, 40), footerLabel);
+  const char* pacingLabel = display.pacingLabel.empty() ? "FAST" : display.pacingLabel.c_str();
+  const int pacingWidth = dotoTextWidth(DotoFontSize::Small, pacingLabel);
+  const int pacingX = 388 - pacingWidth;
+  drawDotoText(DotoFontSize::Small, pacingX, footerY + 7, pacingLabel);
   drawDotoText(DotoFontSize::Small,
                58,
                footerY + 7,
-               clipDotoTextToPixelWidth(display.footerMessage, 260, DotoFontSize::Small));
-  char pageLabel[16];
-  snprintf(pageLabel, sizeof(pageLabel), "P%d/%d", screenPageNumber(display.page), kScreenPageCount);
-  drawDotoText(DotoFontSize::Small, 338, footerY + 7, pageLabel);
+               clipDotoTextToPixelWidth(display.footerMessage, pacingX - 66, DotoFontSize::Small));
   flushIfChanged();
 }
 

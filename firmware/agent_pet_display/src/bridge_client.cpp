@@ -545,21 +545,36 @@ bool fetchPollState(const char* url, AgentState& outState, BridgeCommands& comma
     return false;
   }
 
-  HTTPClient http;
-  http.setConnectTimeout(timeoutMs);
-  http.setTimeout(timeoutMs);
-  if (!http.begin(url)) {
+  static WiFiClient sPollClient;
+  static HTTPClient sPollHttp;
+  sPollHttp.setReuse(true);
+  sPollHttp.setConnectTimeout(timeoutMs);
+  sPollHttp.setTimeout(timeoutMs);
+
+  const bool wasConnected = sPollClient.connected();
+  if (!sPollHttp.begin(sPollClient, url)) {
+    sPollClient.stop();
     return false;
   }
 
-  const int code = http.GET();
+  int code = sPollHttp.GET();
+  if (code <= 0 && wasConnected) {
+    // Reused keep-alive socket was closed by the peer between polls; reconnect
+    // once immediately so idle keep-alive expiry never counts as a poll failure.
+    sPollHttp.end();
+    sPollClient.stop();
+    if (sPollHttp.begin(sPollClient, url)) {
+      code = sPollHttp.GET();
+    }
+  }
   if (code != HTTP_CODE_OK) {
-    http.end();
+    sPollHttp.end();
+    sPollClient.stop();
     return false;
   }
 
-  const String body = http.getString();
-  http.end();
+  const String body = sPollHttp.getString();
+  sPollHttp.end();
   return parsePollPayload(body.c_str(), outState, commands);
 #else
   (void)url;

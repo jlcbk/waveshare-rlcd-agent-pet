@@ -66,7 +66,7 @@ extern "C" uint32_t esp_sleep_get_light_sleep_count(void) __attribute__((weak));
 namespace {
 
 constexpr int kIdleFreqMhz = 80;
-constexpr int kIdleMinFreqMhz = 40;  // DFS floor while awake; Wi-Fi PM locks lift it to 80 on demand
+constexpr int kIdleMinFreqMhz = 20;  // XTAL/2 DFS floor while awake; Wi-Fi PM locks lift it to 80 on demand
 constexpr int kEggFreqMhz = 240;
 // USB Serial/JTAG is unreliable under auto light sleep (ESP-IDF 4.4 docs):
 // keep a quiet boot window with light sleep off so boot logs and flashing

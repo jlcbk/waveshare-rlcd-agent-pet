@@ -270,6 +270,11 @@ void ST7305_U8g2::fullInit()
   _cmd_data(0x2B, win_b, sizeof(win_b));
   _cmd_data(0x35, m35, sizeof(m35));
   _cmd_data(0xD0, d0, sizeof(d0));
-  _cmd(0x38);
+  _cmd(0x39);  // Low Power Mode ON (LPM frame rate for static UI; 0x38 HPM used only during animations)
   _cmd(0x29);
+}
+
+void ST7305_U8g2::setHighPowerMode(bool highPower)
+{
+  _cmd(highPower ? 0x38 : 0x39);
 }

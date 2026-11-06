@@ -16,6 +16,7 @@ struct NetSnapshot {
   NetworkState network{};
   AgentState agent{};
   BridgeCommands commands{};
+  SleepPacingMode pacingMode{SleepPacingMode::Fast};
   uint32_t pollSeq{0};        // increments on every finished poll (ok or not)
   bool lastPollOk{false};
   uint32_t lastPollOkAtMs{0};
@@ -28,6 +29,8 @@ bool netWorkerSnapshot(NetSnapshot& out);  // false before the task runs
 void netWorkerSetFocus(const FocusRequestState& focus);
 void netWorkerSetTelemetry(const DeviceTelemetry& telemetry);
 void netWorkerSetFastPoll(bool fast);
+void netWorkerWake();
+void netWorkerStopForDeepSleep();
 
 // ---- easter-egg streaming (producer: net task, consumer: player on core 1)
 

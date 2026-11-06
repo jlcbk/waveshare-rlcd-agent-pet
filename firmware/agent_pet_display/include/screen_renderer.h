@@ -16,6 +16,9 @@ class ScreenRenderer {
   // Forces the next render() to push the frame even if it looks unchanged
   // (e.g. after the easter-egg player drew directly into the panel).
   void invalidate();
+  // Switches the ST7305 controller between 0x38 High Power Mode (for animation
+  // streaming) and 0x39 Low Power Mode (for static UI pages).
+  void setPanelHighPowerMode(bool highPower);
   // Direct access for full-screen players; nullptr before begin().
   U8G2* u8g2();
 };

@@ -31,6 +31,7 @@ public:
   void begin(uint8_t tile_buf_height = 0, const u8g2_cb_t *rotation = U8G2_R0);
   void reset();
   void fullInit();
+  void setHighPowerMode(bool highPower);
 
   U8G2 *getU8g2()
   {

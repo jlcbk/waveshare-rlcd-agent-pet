@@ -7,4 +7,5 @@ DisplayState deriveDisplayState(const AgentState& agent,
                                 const EnvironmentState& environment,
                                 ScreenPage page,
                                 const NetworkState& network = NetworkState{},
-                                const DisplaySettings& settings = DisplaySettings{});
+                                const DisplaySettings& settings = DisplaySettings{},
+                                SleepPacingMode pacingMode = SleepPacingMode::Fast);

@@ -19,6 +19,7 @@ SOURCES=(
   bridge_client.cpp battery_monitor.cpp button_actions.cpp doto_font.cpp
   focus_controller.cpp pet_sprites.cpp pet_state_machine.cpp screen_layout.cpp
   usage_visuals.cpp clock_model.cpp time_keeper.cpp device_settings.cpp anim_codec.cpp
+  poll_policy.cpp low_battery_guard.cpp pm_controller.cpp wake_guard_sim.cpp
 )
 
 mkdir -p "$BUILD"

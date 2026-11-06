@@ -1,4 +1,22 @@
-# 固件进一步省电优化方案（Round 4 候选）
+# 固件进一步省电优化方案（Round 4 & Round 5 已落地）
+
+> **状态更新（Round 4 & Round 5 已落地）**：
+> - **四级睡眠节拍状态机 + 底栏状态徽章 + 按键唤醒**（`src/poll_policy.cpp`、`src/net_worker.cpp`、`src/app_controller.cpp`、`src/screen_renderer.cpp`）：
+>   - `FAST`（`3s` 轮询）：Agent 活跃（`Running` / `NeedsAttention`）、刚开机、按键唤醒或最近 1 分钟内状态有变化；
+>   - `MEDIUM`（`10s` 轮询）：Agent 状态连续 1 ~ 10 分钟未变化；
+>   - `SLOW`（`30s` 轮询）：Agent 状态连续 10 ~ 30 分钟未变化；
+>   - `DEEP`（`120s` 深度省电轮询 + 电池 `30s` / 温湿度 `120s` 降频采样）：**Agent 状态连续超过 30 分钟未变化**（适配主机常年不关机场景）；
+>   - 屏幕最底栏页码左侧实时显示 `[FAST]` / `[MEDIUM]` / `[SLOW]`（描边胶囊）与 `[DEEP]`（反色黑底胶囊）；在 `DEEP` 状态下按任意侧键立即通过 `netWorkerWake()` 唤醒回 `FAST`（3s 刷新）并停留在当前页面。
+> - **Wi-Fi Beacon Listen Interval 翻倍 + ST7305 反射屏硬件低功耗模式（LPM `0x39`）+ 串口静默**：
+>   - `kWifiListenInterval` 从 `5` 调大至 `10`（约 1 秒唤醒收听一次 Beacon），Bridge `onlineWindowMs` 放宽至 `180_000`（3 分钟）；
+>   - ST7305 默认启用硬件 Low Power Mode（`0x39`），仅在彩蛋动画播放期间临时切回 High Power Mode（`0x38`）；
+>   - Light Sleep 挂起生效后自动静默周期性 `[BRIDGE] ok` 与 `[WIFI] ok` 串口输出。
+> - **板载未用音频外设关断**（`src/environment_monitor.cpp`）：开机显式将扬声器功放使能脚 `PA_CTRL`（`GPIO 46`）置为 `OUTPUT LOW` 并启用 `gpio_hold_en`，同时通过共享 I2C 总线向 `ES8311`（`0x18`）与 `ES7210`（`0x40`）写入 Deep Power-Down 寄存器指令。
+> - **事件驱动网络任务 + 消除 100ms 轮询**（`src/net_worker.cpp`）：`netTask` 改用 `ulTaskNotifyTake` 阻塞至下一次轮询/重连时刻，焦点切换、彩蛋快轮询与流启动通过 `xTaskNotifyGive` 0ms 唤醒；缓存 `WiFi.localIP()` 字符串并按 5s 节流 `WiFi.RSSI()` 采样。
+> - **HTTP Keep-Alive 长连接复用**（`src/bridge_client.cpp`、`src/net_worker.cpp`、`bridge/codex-pet-bridge/src/bridge-server.js`）：复用持久化 `WiFiClient` + `HTTPClient::setReuse(true)`（含断连自动单次重连兜底），Bridge 端开启 30s `keepAliveTimeout` 与显式 `Content-Length`。
+> - **Wi-Fi 断网指数退避**（`src/poll_policy.cpp`、`src/net_worker.cpp`）：按 `10s -> 20s -> 40s -> 60s -> 120s` 退避，侧键交互立即通过 `netWorkerWake()` 重置退避。
+> - **RTC 按分钟对齐采样 + 温湿度显示死区 + 60s 兜底重绘**（`src/app_controller.cpp`、`src/poll_policy.cpp`）：RTC I2C 读取从 60 次/分钟降至 2 次/分钟；温湿度增加 `0.1°C` / `1%` 显示死区；主循环空闲步进放宽至 `200ms`（按键按下时 `50ms`）。
+> - **DFS 空闲下限下探至 20 MHz + 低电保护唤醒路径前置**（`src/pm_controller.cpp`、`src/main.cpp`）：`kIdleMinFreqMhz = 20`（XTAL/2）；`batteryProtectionEarlyCheck()` 移至 `delay(250)` 之前，进入低电保护画屏前先调用 `netWorkerStopForDeepSleep()` 关闭射频。
 
 本文档基于当前 `firmware/agent_pet_display/` 代码实现、[`docs/MAINTENANCE.md`](./MAINTENANCE.md) 维护规范，以及 [ESP-IDF ESP32-S3 Power Management 官方文档](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/api-reference/system/power_management.html) 与 Arduino-ESP32 2.0.17（IDF v4.4.7）底层源码交叉分析整理，供后续 Agent 按优先级逐项实施与验证。
 

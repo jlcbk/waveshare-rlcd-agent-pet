@@ -13,6 +13,7 @@
 
 #include "anim_codec.h"
 #include "app_config.h"
+#include "pm_controller.h"
 #include "poll_policy.h"
 #include "usage_visuals.h"
 
@@ -20,7 +21,7 @@ namespace {
 
 constexpr uint16_t kPollTimeoutMs = 2500;
 constexpr uint16_t kChunkTimeoutMs = 4000;
-constexpr uint16_t kWifiListenInterval = 5;
+constexpr uint16_t kWifiListenInterval = 10;
 constexpr uint32_t kMaxFramesPerChunk = 240;
 constexpr int kMaxChunkFailures = 4;
 
@@ -33,6 +34,7 @@ struct ChunkSlot {
 };
 
 SemaphoreHandle_t gLock = nullptr;
+TaskHandle_t gNetTaskHandle = nullptr;
 std::string gSsid;
 std::string gPassword;
 std::string gPollUrl;
@@ -41,8 +43,15 @@ FocusRequestState gFocus;
 DeviceTelemetry gTelemetry;
 bool gFastPoll = false;
 bool gRunning = false;
+bool gReconnectBackoffReset = false;
 uint32_t gLastAgentChangeMs = 0;  // millis() of the last agent change (0 = no baseline yet)
 uint32_t gFailStreak = 0;         // consecutive failed polls (fast retry, then backoff)
+
+void wakeNetTask() {
+  if (gNetTaskHandle != nullptr) {
+    xTaskNotifyGive(gNetTaskHandle);
+  }
+}
 
 bool gStreamActive = false;
 bool gStreamFailed = false;
@@ -116,12 +125,14 @@ void pollOnce() {
     }
   }
   if (ok) {
-    Serial.printf("[BRIDGE] ok source=%d status=%d focus=%s count=%d rtt=%lums\n",
-                  static_cast<int>(agent.source),
-                  static_cast<int>(agent.status),
-                  focus.mode == LocalFocusMode::Pinned ? "pinned" : "auto",
-                  agent.focusCount,
-                  static_cast<unsigned long>(doneAt - sentAt));
+    if (!pmLightSleepArmed()) {
+      Serial.printf("[BRIDGE] ok source=%d status=%d focus=%s count=%d rtt=%lums\n",
+                    static_cast<int>(agent.source),
+                    static_cast<int>(agent.status),
+                    focus.mode == LocalFocusMode::Pinned ? "pinned" : "auto",
+                    agent.focusCount,
+                    static_cast<unsigned long>(doneAt - sentAt));
+    }
   } else {
     Serial.printf("[BRIDGE] poll failed after %lums\n", static_cast<unsigned long>(doneAt - sentAt));
   }
@@ -175,27 +186,40 @@ void fillStream() {
     return;
   }
 
-  HTTPClient http;
-  http.setConnectTimeout(kChunkTimeoutMs);
-  http.setTimeout(kChunkTimeoutMs);
-  if (!http.begin(url.c_str())) {
+  static WiFiClient sStreamClient;
+  static HTTPClient sStreamHttp;
+  sStreamHttp.setReuse(true);
+  sStreamHttp.setConnectTimeout(kChunkTimeoutMs);
+  sStreamHttp.setTimeout(kChunkTimeoutMs);
+  const bool wasConnected = sStreamClient.connected();
+  if (!sStreamHttp.begin(sStreamClient, url.c_str())) {
+    sStreamClient.stop();
     markChunkFailure(generation, "begin");
     return;
   }
-  const int code = http.GET();
+  int code = sStreamHttp.GET();
+  if (code <= 0 && wasConnected) {
+    sStreamHttp.end();
+    sStreamClient.stop();
+    if (sStreamHttp.begin(sStreamClient, url.c_str())) {
+      code = sStreamHttp.GET();
+    }
+  }
   if (code != HTTP_CODE_OK) {
-    http.end();
+    sStreamHttp.end();
+    sStreamClient.stop();
     markChunkFailure(generation, "status");
     return;
   }
-  const int size = http.getSize();
+  const int size = sStreamHttp.getSize();
   if (size <= 0 || size > static_cast<int>(kAnimChunkBytes)) {
-    http.end();
+    sStreamHttp.end();
+    sStreamClient.stop();
     markChunkFailure(generation, "size");
     return;
   }
   uint8_t* target = gSlots[slot].data;
-  WiFiClient* stream = http.getStreamPtr();
+  WiFiClient* stream = sStreamHttp.getStreamPtr();
   size_t received = 0;
   const uint32_t deadline = millis() + kChunkTimeoutMs;
   while (received < static_cast<size_t>(size) && static_cast<int32_t>(millis() - deadline) < 0) {
@@ -212,8 +236,9 @@ void fillStream() {
       delay(1);
     }
   }
-  http.end();
+  sStreamHttp.end();
   if (received != static_cast<size_t>(size)) {
+    sStreamClient.stop();
     markChunkFailure(generation, "short read");
     return;
   }
@@ -282,7 +307,11 @@ void netTask(void*) {
   uint32_t lastReconnect = millis();
   uint32_t lastReport = 0;
   uint32_t lastPoll = 0;
+  uint32_t lastRssiSample = 0;
   uint32_t reconnectAttempts = 0;
+  uint32_t cachedIpRaw = 0;
+  std::string cachedIp;
+  int cachedRssi = 0;
   bool sntpStarted = false;
   bool sleepDisabled = false;
   wl_status_t lastStatus = WL_IDLE_STATUS;
@@ -292,22 +321,47 @@ void netTask(void*) {
     const wl_status_t status = WiFi.status();
     const bool connected = status == WL_CONNECTED;
 
+    bool resetBackoff = false;
+    {
+      Guard guard;
+      if (gReconnectBackoffReset) {
+        resetBackoff = true;
+        gReconnectBackoffReset = false;
+      }
+    }
+    if (resetBackoff && !connected) {
+      reconnectAttempts = 0;
+      lastReconnect = now - kWifiReconnectMs;
+    }
+
     if (status != lastStatus) {
       if (connected) {
-        Serial.printf("[WIFI] connected ip=%s rssi=%d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+        const IPAddress ip = WiFi.localIP();
+        cachedIpRaw = static_cast<uint32_t>(ip);
+        cachedIp = ip.toString().c_str();
+        cachedRssi = WiFi.RSSI();
+        lastRssiSample = now;
+        Serial.printf("[WIFI] connected ip=%s rssi=%d dBm\n", cachedIp.c_str(), cachedRssi);
         {
           Guard guard;
           gLastAgentChangeMs = now;  // resync quickly after (re)connect
         }
         reconnectAttempts = 0;
       } else {
+        cachedIpRaw = 0;
+        cachedIp.clear();
+        cachedRssi = 0;
         Serial.printf("[WIFI] status=%d\n", static_cast<int>(status));
       }
       lastStatus = status;
     }
-    if (!connected && now - lastReconnect >= kWifiReconnectMs) {
+
+    const uint32_t reconnectInterval = wifiReconnectIntervalMs(reconnectAttempts);
+    if (!connected && now - lastReconnect >= reconnectInterval) {
       reconnectAttempts += 1;
-      Serial.printf("[WIFI] reconnect attempt=%lu status=%d\n", static_cast<unsigned long>(reconnectAttempts),
+      Serial.printf("[WIFI] reconnect attempt=%lu interval=%lums status=%d\n",
+                    static_cast<unsigned long>(reconnectAttempts),
+                    static_cast<unsigned long>(reconnectInterval),
                     static_cast<int>(status));
       WiFi.disconnect(false);
       beginWifi();
@@ -318,12 +372,27 @@ void netTask(void*) {
       configTime(0, 0, "pool.ntp.org", "time.cloudflare.com", "ntp.aliyun.com");
       sntpStarted = true;
     }
+    if (connected) {
+      const IPAddress ip = WiFi.localIP();
+      const uint32_t ipRaw = static_cast<uint32_t>(ip);
+      if (ipRaw != cachedIpRaw) {
+        cachedIpRaw = ipRaw;
+        cachedIp = ip.toString().c_str();
+      }
+      if (lastRssiSample == 0 || now - lastRssiSample >= 5000) {
+        cachedRssi = WiFi.RSSI();
+        lastRssiSample = now;
+      }
+    }
     if (now - lastReport >= kWifiReportMs) {
       if (connected) {
-        Serial.printf("[WIFI] ok ip=%s rssi=%d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+        if (!pmLightSleepArmed()) {
+          Serial.printf("[WIFI] ok ip=%s rssi=%d dBm\n", cachedIp.c_str(), cachedRssi);
+        }
       } else {
-        Serial.printf("[WIFI] waiting status=%d attempts=%lu\n", static_cast<int>(status),
-                      static_cast<unsigned long>(reconnectAttempts));
+        Serial.printf("[WIFI] waiting status=%d attempts=%lu next=%lums\n", static_cast<int>(status),
+                      static_cast<unsigned long>(reconnectAttempts),
+                      static_cast<unsigned long>(wifiReconnectIntervalMs(reconnectAttempts)));
       }
       lastReport = now;
     }
@@ -336,8 +405,8 @@ void netTask(void*) {
     network.wifiStatusCode = static_cast<int>(status);
     network.reconnectAttempts = reconnectAttempts;
     if (connected) {
-      network.rssi = WiFi.RSSI();
-      network.ip = WiFi.localIP().toString().c_str();
+      network.rssi = cachedRssi;
+      network.ip = cachedIp;
     }
 
     bool streaming = false;
@@ -357,6 +426,8 @@ void netTask(void*) {
              gSnapshot.agent.status == AgentStatus::NeedsAttention;
       lastAgentChange = gLastAgentChangeMs;
       failStreak = gFailStreak;
+      gSnapshot.pacingMode =
+          deriveSleepPacingMode(fastPoll, busy, lastAgentChange != 0, now - lastAgentChange);
     }
 
     // Streaming needs low latency; restore maximum modem sleep afterwards.
@@ -365,18 +436,55 @@ void netTask(void*) {
       sleepDisabled = streaming;
     }
 
-    const uint32_t interval = pollIntervalMs(fastPoll, busy, lastAgentChange != 0,
-                                             now - lastAgentChange, failStreak);
-    if (connected && millis() - lastPoll >= interval) {
+    uint32_t interval = pollIntervalMs(fastPoll, busy, lastAgentChange != 0,
+                                       now - lastAgentChange, failStreak);
+    if (connected && (lastPoll == 0 || millis() - lastPoll >= interval)) {
       pollOnce();
       lastPoll = millis();
+      // Re-evaluate interval after pollOnce() so a newly-busy or failed state
+      // schedules the next wake accurately.
+      {
+        Guard guard;
+        streaming = gStreamActive && !gStreamFailed;
+        fastPoll = gFastPoll;
+        busy = gSnapshot.agent.status == AgentStatus::Running ||
+               gSnapshot.agent.status == AgentStatus::NeedsAttention;
+        lastAgentChange = gLastAgentChangeMs;
+        failStreak = gFailStreak;
+        gSnapshot.pacingMode =
+            deriveSleepPacingMode(fastPoll, busy, lastAgentChange != 0, lastPoll - lastAgentChange);
+      }
+      interval = pollIntervalMs(fastPoll, busy, lastAgentChange != 0,
+                                lastPoll - lastAgentChange, failStreak);
     }
     if (connected && streaming) {
       fillStream();
     }
-    // Idle pacing 100 ms: poll scheduling and status checks tolerate it;
-    // streaming keeps its 2 ms cadence.
-    vTaskDelay(pdMS_TO_TICKS(streaming ? 2 : 100));
+    if (streaming) {
+      vTaskDelay(pdMS_TO_TICKS(2));
+      continue;
+    }
+
+    // Event-driven sleep: block until the next scheduled poll / reconnect
+    // deadline or an explicit xTaskNotifyGive() from a button/focus/stream
+    // change on core 1. Eliminates the 10 Hz idle wakeups on core 0.
+    const uint32_t afterNow = millis();
+    uint32_t sleepMs = 1000;
+    if (connected) {
+      const uint32_t elapsed = afterNow - lastPoll;
+      const uint32_t remaining = elapsed >= interval ? 0 : (interval - elapsed);
+      sleepMs = remaining < 50 ? 50 : (remaining > kDeepIdlePollMs ? kDeepIdlePollMs : remaining);
+    } else {
+      const uint32_t targetRecon = wifiReconnectIntervalMs(reconnectAttempts);
+      const uint32_t elapsedRecon = afterNow - lastReconnect;
+      const uint32_t remainingRecon = elapsedRecon >= targetRecon ? 0 : (targetRecon - elapsedRecon);
+      // Poll Wi-Fi association status every 250 ms during the first 4 s after
+      // kicking off a connect; then relax to up to 2 s steps until the next
+      // reconnect attempt is due.
+      const uint32_t capMs = elapsedRecon < 4000 ? 250 : 2000;
+      sleepMs = remainingRecon < capMs ? (remainingRecon < 50 ? 50 : remainingRecon) : capMs;
+    }
+    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(sleepMs));
   }
 }
 
@@ -396,7 +504,7 @@ void netWorkerBegin(const char* ssid, const char* password, const char* pollUrl)
   setWifiPowerSave(WIFI_PS_MAX_MODEM);
   beginWifi();
   gRunning = true;
-  xTaskCreatePinnedToCore(netTask, "net", 12288, nullptr, 1, nullptr, 0);
+  xTaskCreatePinnedToCore(netTask, "net", 12288, nullptr, 1, &gNetTaskHandle, 0);
 }
 
 bool netWorkerSnapshot(NetSnapshot& out) {
@@ -412,14 +520,20 @@ void netWorkerSetFocus(const FocusRequestState& focus) {
   if (!gRunning) {
     return;
   }
-  Guard guard;
-  // The app calls this after every poll to mirror its focus state; only a real
-  // selection change (not the periodic no-op sync) should restart active mode.
-  const bool changed = gFocus.mode != focus.mode || gFocus.focusId != focus.focusId ||
-                       gFocus.visibleIndex != focus.visibleIndex;
-  gFocus = focus;
+  bool changed = false;
+  {
+    Guard guard;
+    // The app calls this after every poll to mirror its focus state; only a real
+    // selection change (not the periodic no-op sync) should restart active mode.
+    changed = gFocus.mode != focus.mode || gFocus.focusId != focus.focusId ||
+              gFocus.visibleIndex != focus.visibleIndex;
+    gFocus = focus;
+    if (changed) {
+      gLastAgentChangeMs = millis();  // poll with the new focus promptly
+    }
+  }
   if (changed) {
-    gLastAgentChangeMs = millis();  // poll with the new focus promptly
+    wakeNetTask();
   }
 }
 
@@ -435,8 +549,36 @@ void netWorkerSetFastPoll(bool fast) {
   if (!gRunning) {
     return;
   }
-  Guard guard;
-  gFastPoll = fast;
+  bool wake = false;
+  {
+    Guard guard;
+    wake = fast && !gFastPoll;
+    gFastPoll = fast;
+  }
+  if (wake) {
+    wakeNetTask();
+  }
+}
+
+void netWorkerWake() {
+  if (!gRunning) {
+    return;
+  }
+  {
+    Guard guard;
+    gReconnectBackoffReset = true;
+    gLastAgentChangeMs = millis();
+    gSnapshot.pacingMode = SleepPacingMode::Fast;
+  }
+  wakeNetTask();
+}
+
+void netWorkerStopForDeepSleep() {
+  if (!gRunning) {
+    return;
+  }
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
 }
 
 void netWorkerStartStream(const std::string& id, uint32_t totalFrames) {
@@ -470,6 +612,7 @@ void netWorkerStartStream(const std::string& id, uint32_t totalFrames) {
   gStreamNextFrame = 0;
   gStreamFailed = false;
   gStreamActive = true;
+  wakeNetTask();
 }
 
 void netWorkerStopStream() {
@@ -532,6 +675,8 @@ bool netWorkerSnapshot(NetSnapshot& out) {
 void netWorkerSetFocus(const FocusRequestState&) {}
 void netWorkerSetTelemetry(const DeviceTelemetry&) {}
 void netWorkerSetFastPoll(bool) {}
+void netWorkerWake() {}
+void netWorkerStopForDeepSleep() {}
 void netWorkerStartStream(const std::string&, uint32_t) {}
 void netWorkerStopStream() {}
 bool netWorkerPeekChunk(uint32_t, AnimChunkView&) {

@@ -46,6 +46,13 @@ enum class ScreenPage {
   Clock,
 };
 
+enum class SleepPacingMode {
+  Fast,    // 3s refresh (active agent, or <1 min since change / button wake)
+  Medium,  // 10s refresh (1..10 min unchanged)
+  Slow,    // 30s refresh (10..30 min unchanged)
+  Deep,    // 120s deep-idle refresh (>30 min unchanged; wake to FAST on button press)
+};
+
 static constexpr int kScreenPageCount = 3;
 
 // User-facing display preferences; persisted on the board and optionally
@@ -219,6 +226,8 @@ struct DisplayState {
   // signal bars, 1..4 = rssiBars() bucket for a connected RSSI.
   WifiIconState wifiIconState{WifiIconState::Unknown};
   int wifiIconLevel{0};
+  SleepPacingMode pacingMode{SleepPacingMode::Fast};
+  std::string pacingLabel{"FAST"};
   ClockView clock{};
 };
 

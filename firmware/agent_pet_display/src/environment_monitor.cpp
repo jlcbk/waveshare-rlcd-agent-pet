@@ -1,11 +1,13 @@
 #include "environment_monitor.h"
 
+#include "app_config.h"
 #include "time_keeper.h"
 
 #ifdef ARDUINO
 
 #include <Arduino.h>
 #include <Wire.h>
+#include <driver/gpio.h>
 #include <time.h>
 
 #include "SensorPCF85063.hpp"
@@ -15,6 +17,8 @@ namespace {
 constexpr int kEnvI2cSclPin = 14;
 constexpr int kEnvI2cSdaPin = 13;
 constexpr uint8_t kShtc3Address = 0x70;
+constexpr uint8_t kEs8311Address = 0x18;
+constexpr uint8_t kEs7210Address = 0x40;
 constexpr uint16_t kShtc3WakeupCommand = 0x3517;
 constexpr uint16_t kShtc3SleepCommand = 0xB098;
 constexpr uint16_t kShtc3SoftResetCommand = 0x805D;
@@ -23,6 +27,34 @@ constexpr float kShtc3TemperatureOffsetC = 4.0f;
 
 SensorPCF85063 gRtc;
 bool gEnvironmentReady = false;
+
+void writeI2cReg8(uint8_t address, uint8_t reg, uint8_t value) {
+  Wire.beginTransmission(address);
+  Wire.write(reg);
+  Wire.write(value);
+  Wire.endTransmission();
+}
+
+void powerDownUnusedAudioHardware() {
+  // 1. Force the onboard NS4150B class-D speaker power amplifier into shutdown
+  // (PA_CTRL = GPIO46 LOW) and hold the pad across light sleep.
+  gpio_hold_dis(static_cast<gpio_num_t>(kAudioPaCtrlPin));
+  pinMode(kAudioPaCtrlPin, OUTPUT);
+  digitalWrite(kAudioPaCtrlPin, LOW);
+  gpio_hold_en(static_cast<gpio_num_t>(kAudioPaCtrlPin));
+
+  // 2. Put ES8311 mono DAC (0x18) into deep power-down over the shared I2C bus.
+  writeI2cReg8(kEs8311Address, 0x12, 0x02);  // SYSTEM_REG12: power down DAC
+  writeI2cReg8(kEs8311Address, 0x0E, 0x6A);  // SYSTEM_REG0E: power down PGA/ADC/modulator
+  writeI2cReg8(kEs8311Address, 0x0D, 0xFC);  // SYSTEM_REG0D: power down analog/VREF/bias
+  writeI2cReg8(kEs8311Address, 0x00, 0x1F);  // RESET_REG00: CSM_ON=0, all blocks in reset
+
+  // 3. Put ES7210 mic ADC (0x40) into deep power-down over the shared I2C bus.
+  writeI2cReg8(kEs7210Address, 0x40, 0xFF);  // ANALOG_SYS_REG40: power down VMID/MICBIAS/PGA
+  writeI2cReg8(kEs7210Address, 0x06, 0x07);  // POWER_DOWN_REG06: power down DLL/analog
+  writeI2cReg8(kEs7210Address, 0x01, 0x7F);  // CLOCK_OFF_REG01: gate all internal ADC clocks
+  writeI2cReg8(kEs7210Address, 0x00, 0x41);  // RESET_REG00: master power down
+}
 
 void writeShtc3Command(uint16_t command) {
   Wire.beginTransmission(kShtc3Address);
@@ -89,6 +121,7 @@ void beginEnvironmentMonitor() {
   if (!gRtc.begin(Wire, kEnvI2cSdaPin, kEnvI2cSclPin)) {
     return;
   }
+  powerDownUnusedAudioHardware();
   writeShtc3Command(kShtc3WakeupCommand);
   delay(2);
   writeShtc3Command(kShtc3SoftResetCommand);

@@ -37,6 +37,27 @@ void test_idle_fallback_after_active_hold(void) {
                            pollIntervalMs(false, false, true, 60001, 0));
   TEST_ASSERT_EQUAL_UINT32(kIdlePollMs,
                            pollIntervalMs(false, false, true, 600000, 0));
+  TEST_ASSERT_EQUAL_UINT32(kSlowPollMs,
+                           pollIntervalMs(false, false, true, 600001, 0));
+  TEST_ASSERT_EQUAL_UINT32(kSlowPollMs,
+                           pollIntervalMs(false, false, true, 1800000, 0));
+  TEST_ASSERT_EQUAL_UINT32(kDeepIdlePollMs,
+                           pollIntervalMs(false, false, true, 1800001, 0));
+}
+
+void test_sleep_pacing_modes_and_labels(void) {
+  TEST_ASSERT_EQUAL(SleepPacingMode::Fast, deriveSleepPacingMode(false, false, true, 60000));
+  TEST_ASSERT_EQUAL(SleepPacingMode::Medium, deriveSleepPacingMode(false, false, true, 60001));
+  TEST_ASSERT_EQUAL(SleepPacingMode::Medium, deriveSleepPacingMode(false, false, true, 600000));
+  TEST_ASSERT_EQUAL(SleepPacingMode::Slow, deriveSleepPacingMode(false, false, true, 600001));
+  TEST_ASSERT_EQUAL(SleepPacingMode::Slow, deriveSleepPacingMode(false, false, true, 1800000));
+  TEST_ASSERT_EQUAL(SleepPacingMode::Deep, deriveSleepPacingMode(false, false, true, 1800001));
+  // Busy agent stays FAST even after 30 minutes
+  TEST_ASSERT_EQUAL(SleepPacingMode::Fast, deriveSleepPacingMode(false, true, true, 3600000));
+  TEST_ASSERT_EQUAL_STRING("FAST", sleepPacingLabel(SleepPacingMode::Fast));
+  TEST_ASSERT_EQUAL_STRING("MEDIUM", sleepPacingLabel(SleepPacingMode::Medium));
+  TEST_ASSERT_EQUAL_STRING("SLOW", sleepPacingLabel(SleepPacingMode::Slow));
+  TEST_ASSERT_EQUAL_STRING("DEEP", sleepPacingLabel(SleepPacingMode::Deep));
 }
 
 // 2b. Spec: the active hold is inclusive at exactly kActiveHoldMs, i.e. 60000
@@ -136,10 +157,41 @@ void test_constants_and_backoff_formula(void) {
                                              : kIdlePollMs);
 }
 
+void test_wifi_reconnect_backoff_ladder(void) {
+  TEST_ASSERT_EQUAL_UINT32(10000, wifiReconnectIntervalMs(0));
+  TEST_ASSERT_EQUAL_UINT32(10000, wifiReconnectIntervalMs(1));
+  TEST_ASSERT_EQUAL_UINT32(20000, wifiReconnectIntervalMs(2));
+  TEST_ASSERT_EQUAL_UINT32(40000, wifiReconnectIntervalMs(3));
+  TEST_ASSERT_EQUAL_UINT32(60000, wifiReconnectIntervalMs(4));
+  TEST_ASSERT_EQUAL_UINT32(120000, wifiReconnectIntervalMs(5));
+  TEST_ASSERT_EQUAL_UINT32(120000, wifiReconnectIntervalMs(100));
+}
+
+void test_dynamic_clock_sample_delay(void) {
+  TEST_ASSERT_EQUAL_UINT32(1000, nextClockSampleDelayMs(false, 0));
+  TEST_ASSERT_EQUAL_UINT32(1000, nextClockSampleDelayMs(false, 30));
+  TEST_ASSERT_EQUAL_UINT32(59000, nextClockSampleDelayMs(true, 0));
+  TEST_ASSERT_EQUAL_UINT32(29000, nextClockSampleDelayMs(true, 30));
+  TEST_ASSERT_EQUAL_UINT32(2000, nextClockSampleDelayMs(true, 57));
+  TEST_ASSERT_EQUAL_UINT32(1000, nextClockSampleDelayMs(true, 58));
+  TEST_ASSERT_EQUAL_UINT32(1000, nextClockSampleDelayMs(true, 59));
+}
+
+void test_climate_display_deadband(void) {
+  // Invalid -> valid transition triggers redraw
+  TEST_ASSERT_TRUE(climateDisplayChanged(true, 25.0f, 50.0f, false, 0.0f, 0.0f));
+  // Sub-deadband jitter (<0.1C and <1%) does not trigger redraw
+  TEST_ASSERT_FALSE(climateDisplayChanged(true, 25.04f, 50.4f, true, 25.0f, 50.0f));
+  // Crossing >=0.1C or >=1% triggers redraw
+  TEST_ASSERT_TRUE(climateDisplayChanged(true, 25.11f, 50.0f, true, 25.0f, 50.0f));
+  TEST_ASSERT_TRUE(climateDisplayChanged(true, 25.0f, 51.1f, true, 25.0f, 50.0f));
+}
+
 int main(void) {
   UNITY_BEGIN();
   RUN_TEST(test_fast_poll_always_wins);
   RUN_TEST(test_idle_fallback_after_active_hold);
+  RUN_TEST(test_sleep_pacing_modes_and_labels);
   RUN_TEST(test_active_hold_includes_60000_boundary);
   RUN_TEST(test_busy_agent_keeps_active_rate);
   RUN_TEST(test_no_baseline_keeps_active_rate);
@@ -148,5 +200,8 @@ int main(void) {
   RUN_TEST(test_failure_beats_active_rate);
   RUN_TEST(test_millis_rollover_arithmetic);
   RUN_TEST(test_constants_and_backoff_formula);
+  RUN_TEST(test_wifi_reconnect_backoff_ladder);
+  RUN_TEST(test_dynamic_clock_sample_delay);
+  RUN_TEST(test_climate_display_deadband);
   return UNITY_END();
 }
