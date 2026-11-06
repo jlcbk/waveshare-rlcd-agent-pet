@@ -108,8 +108,7 @@ void pollOnce() {
       const AgentState& prev = gSnapshot.agent;
       if (firstSuccess || prev.status != agent.status || prev.statusDetail != agent.statusDetail ||
           prev.task != agent.task || prev.usageToday != agent.usageToday ||
-          prev.usageContext != agent.usageContext ||
-          !quotaUsageSameIgnoringCountdown(prev.usageQuota, agent.usageQuota)) {
+          prev.usageContext != agent.usageContext) {
         gLastAgentChangeMs = doneAt;
       }
       gSnapshot.agent = agent;
@@ -342,10 +341,7 @@ void netTask(void*) {
         cachedRssi = WiFi.RSSI();
         lastRssiSample = now;
         Serial.printf("[WIFI] connected ip=%s rssi=%d dBm\n", cachedIp.c_str(), cachedRssi);
-        {
-          Guard guard;
-          gLastAgentChangeMs = now;  // resync quickly after (re)connect
-        }
+        lastPoll = 0;  // poll immediately on (re)connect; only real agent changes reset sleep pacing
         reconnectAttempts = 0;
       } else {
         cachedIpRaw = 0;

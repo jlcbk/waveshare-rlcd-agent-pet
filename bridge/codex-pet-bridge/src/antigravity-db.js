@@ -618,8 +618,8 @@ export async function loadAntigravityRealtimeState({
       ? inferAntigravityRealtimeFromTranscriptLines(lines)
       : inferStepFallbackStatus(activeDetail?.steps?.last, active.mtimeMs);
     if (parsed?.status) {
-      const parsedMs = Date.parse(parsed.time || "") || active.mtimeMs;
-      const effectiveTimeMs = Math.max(parsedMs, active.mtimeMs);
+      const parsedMs = Date.parse(parsed.time || "");
+      const effectiveTimeMs = Number.isFinite(parsedMs) && parsedMs > 0 ? parsedMs : active.mtimeMs;
       const status = ageOutRealtimeStatus(parsed.status, now - effectiveTimeMs, windows);
       if (status) {
         transcriptCandidate = {

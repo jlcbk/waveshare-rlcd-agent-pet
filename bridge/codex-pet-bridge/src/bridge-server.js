@@ -893,7 +893,11 @@ async function loadAntigravityUsageSummary(antigravityRealtime) {
     Date.now() - antigravityCache.todayLoadedAt > USAGE_CACHE_MS ||
     (needSnapshot && !antigravityCache.snapshot);
   if (stale) {
-    if (antigravityCache.todayLoadedAt === 0 || USAGE_CACHE_MS === 0) {
+    if (
+      antigravityCache.todayLoadedAt === 0 ||
+      USAGE_CACHE_MS === 0 ||
+      (needSnapshot && !antigravityCache.snapshot)
+    ) {
       await refreshAntigravityTodayUsage(needSnapshot);
     } else {
       void refreshAntigravityTodayUsage(needSnapshot);
