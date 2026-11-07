@@ -539,6 +539,89 @@ std::string redactUrlToken(const char* url) {
   return out;
 }
 
+std::string extractUrlHost(const char* url) {
+  if (!url || !url[0]) {
+    return "";
+  }
+  const std::string text(url);
+  const size_t schemeEnd = text.find("://");
+  if (schemeEnd == std::string::npos) {
+    return "";
+  }
+  const size_t hostStart = schemeEnd + 3;
+  size_t authorityEnd = text.find('/', hostStart);
+  if (authorityEnd == std::string::npos) {
+    authorityEnd = text.find('?', hostStart);
+  }
+  if (authorityEnd == std::string::npos) {
+    authorityEnd = text.size();
+  }
+  const size_t colonAt = text.find(':', hostStart);
+  const size_t hostEnd = (colonAt != std::string::npos && colonAt < authorityEnd) ? colonAt : authorityEnd;
+  if (hostEnd <= hostStart) {
+    return "";
+  }
+  return text.substr(hostStart, hostEnd - hostStart);
+}
+
+std::string replaceUrlHost(const char* url, const char* newHost) {
+  if (!url || !url[0]) {
+    return "";
+  }
+  const std::string text(url);
+  if (!newHost || !newHost[0]) {
+    return text;
+  }
+  const size_t schemeEnd = text.find("://");
+  if (schemeEnd == std::string::npos) {
+    return text;
+  }
+  const size_t hostStart = schemeEnd + 3;
+  size_t authorityEnd = text.find('/', hostStart);
+  if (authorityEnd == std::string::npos) {
+    authorityEnd = text.find('?', hostStart);
+  }
+  if (authorityEnd == std::string::npos) {
+    authorityEnd = text.size();
+  }
+  const size_t colonAt = text.find(':', hostStart);
+  const size_t hostEnd = (colonAt != std::string::npos && colonAt < authorityEnd) ? colonAt : authorityEnd;
+  if (hostEnd <= hostStart) {
+    return text;
+  }
+  return text.substr(0, hostStart) + std::string(newHost) + text.substr(hostEnd);
+}
+
+std::string normalizeMdnsHost(const char* host) {
+  if (!host || !host[0]) {
+    return "";
+  }
+  std::string out = trimSpaces(std::string(host));
+  while (!out.empty() && out.back() == '.') {
+    out.pop_back();
+  }
+  static constexpr const char* kSuffix = ".local";
+  static constexpr size_t kSuffixLen = 6;
+  if (out.size() > kSuffixLen) {
+    const size_t tailPos = out.size() - kSuffixLen;
+    bool matches = true;
+    for (size_t i = 0; i < kSuffixLen; ++i) {
+      char c = out[tailPos + i];
+      if (c >= 'A' && c <= 'Z') {
+        c = static_cast<char>(c - 'A' + 'a');
+      }
+      if (c != kSuffix[i]) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) {
+      out.erase(tailPos);
+    }
+  }
+  return out;
+}
+
 bool fetchPollState(const char* url, AgentState& outState, BridgeCommands& commands, uint16_t timeoutMs) {
 #ifdef ARDUINO
   if (WiFi.status() != WL_CONNECTED) {

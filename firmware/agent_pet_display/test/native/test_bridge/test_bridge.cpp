@@ -450,6 +450,21 @@ void test_redact_url_token(void) {
   TEST_ASSERT_EQUAL_STRING("http://h/p", redactUrlToken("http://h/p").c_str());
 }
 
+void test_url_host_helpers_and_mdns_normalization(void) {
+  TEST_ASSERT_EQUAL_STRING("192.168.1.241",
+                           extractUrlHost("http://192.168.1.241:17366/esp32/poll?token=abc").c_str());
+  TEST_ASSERT_EQUAL_STRING("cuis-Mac-mini.local",
+                           extractUrlHost("http://cuis-Mac-mini.local:17366/esp32/poll").c_str());
+  TEST_ASSERT_EQUAL_STRING("http://192.168.1.186:17366/esp32/poll?token=abc",
+                           replaceUrlHost("http://192.168.1.241:17366/esp32/poll?token=abc", "192.168.1.186").c_str());
+  TEST_ASSERT_EQUAL_STRING("http://192.168.1.186/esp32/poll",
+                           replaceUrlHost("http://old-host/esp32/poll", "192.168.1.186").c_str());
+  TEST_ASSERT_EQUAL_STRING("cuis-Mac-mini", normalizeMdnsHost("cuis-Mac-mini.local.").c_str());
+  TEST_ASSERT_EQUAL_STRING("cuis-Mac-mini", normalizeMdnsHost("  cuis-Mac-mini.LOCAL  ").c_str());
+  TEST_ASSERT_EQUAL_STRING("cuis-Mac-mini", normalizeMdnsHost("cuis-Mac-mini").c_str());
+  TEST_ASSERT_EQUAL_STRING("", normalizeMdnsHost("").c_str());
+}
+
 void test_egg_request_is_reported_only_when_set(void) {
   DeviceTelemetry t{};
   TEST_ASSERT_TRUE(buildTelemetryQuery(t).find("eggreq") == std::string::npos);
@@ -503,6 +518,7 @@ int main(void) {
   RUN_TEST(test_page_names_round_trip);
   RUN_TEST(test_anim_chunk_url_keeps_token_and_encodes_id);
   RUN_TEST(test_redact_url_token);
+  RUN_TEST(test_url_host_helpers_and_mdns_normalization);
   RUN_TEST(test_egg_request_is_reported_only_when_set);
   RUN_TEST(test_antigravity_payload_maps_to_antigravity_source_and_preserves_raw);
   return UNITY_END();

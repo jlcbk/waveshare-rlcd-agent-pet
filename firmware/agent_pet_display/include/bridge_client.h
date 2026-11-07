@@ -73,6 +73,11 @@ std::string buildAnimChunkUrl(const char* pollUrl, const std::string& id, uint32
                               uint32_t maxBytes);
 // Hides the token query value for logs.
 std::string redactUrlToken(const char* url);
+// Extracts or replaces the host part of an http(s)://host[:port]/... URL.
+std::string extractUrlHost(const char* url);
+std::string replaceUrlHost(const char* url, const char* newHost);
+// Strips trailing ".local" / ".local." for mdns_query_a().
+std::string normalizeMdnsHost(const char* host);
 
 bool fetchAgentState(const char* url, AgentState& outState);
 // Fetch with explicit timeouts and command parsing; used by the network task.

@@ -4,11 +4,13 @@
 
 #include <Arduino.h>
 #include <HTTPClient.h>
+#include <Preferences.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
+#include <mdns.h>
 #include <time.h>
 
 #include "anim_codec.h"
@@ -24,6 +26,8 @@ constexpr uint16_t kChunkTimeoutMs = 4000;
 constexpr uint16_t kWifiListenInterval = 10;
 constexpr uint32_t kMaxFramesPerChunk = 240;
 constexpr int kMaxChunkFailures = 4;
+constexpr uint32_t kMdnsLookupTimeoutMs = 1500;
+constexpr uint32_t kMdnsLookupCooldownMs = 15000;
 
 struct ChunkSlot {
   uint8_t* data;  // kAnimChunkBytes; allocated for the first stream and kept (the net task may still write to it)
@@ -38,6 +42,8 @@ TaskHandle_t gNetTaskHandle = nullptr;
 std::string gSsid;
 std::string gPassword;
 std::string gPollUrl;
+std::string gMdnsHost;
+std::string gSavedBridgeIp;
 NetSnapshot gSnapshot;
 FocusRequestState gFocus;
 DeviceTelemetry gTelemetry;
@@ -302,10 +308,46 @@ void beginWifi() {
   }
 }
 
+bool tryResolveBridgeHost(bool streaming) {
+  if (gMdnsHost.empty()) {
+    return false;
+  }
+  setWifiPowerSave(WIFI_PS_NONE);
+  if (mdns_init() != ESP_OK) {
+    setWifiPowerSave(streaming ? WIFI_PS_NONE : WIFI_PS_MAX_MODEM);
+    return false;
+  }
+  esp_ip4_addr_t addr = {};
+  const esp_err_t err = mdns_query_a(gMdnsHost.c_str(), kMdnsLookupTimeoutMs, &addr);
+  mdns_free();
+  setWifiPowerSave(streaming ? WIFI_PS_NONE : WIFI_PS_MAX_MODEM);
+  if (err != ESP_OK || addr.addr == 0) {
+    Serial.printf("[BRIDGE] mDNS lookup %s.local failed: 0x%x\n", gMdnsHost.c_str(), err);
+    return false;
+  }
+  char ipBuf[24] = {};
+  snprintf(ipBuf, sizeof(ipBuf), IPSTR, IP2STR(&addr));
+  {
+    Guard guard;
+    gPollUrl = replaceUrlHost(gPollUrl.c_str(), ipBuf);
+  }
+  if (gSavedBridgeIp != ipBuf) {
+    Preferences prefs;
+    if (prefs.begin("net_cache", false)) {
+      prefs.putString("bridge_ip", ipBuf);
+      prefs.end();
+    }
+    gSavedBridgeIp = ipBuf;
+  }
+  Serial.printf("[BRIDGE] mDNS resolved %s.local -> %s\n", gMdnsHost.c_str(), ipBuf);
+  return true;
+}
+
 void netTask(void*) {
   uint32_t lastReconnect = millis();
   uint32_t lastReport = 0;
   uint32_t lastPoll = 0;
+  uint32_t lastMdnsLookup = 0;
   uint32_t lastRssiSample = 0;
   uint32_t reconnectAttempts = 0;
   uint32_t cachedIpRaw = 0;
@@ -452,6 +494,13 @@ void netTask(void*) {
       }
       interval = pollIntervalMs(fastPoll, busy, lastAgentChange != 0,
                                 lastPoll - lastAgentChange, failStreak);
+      if (failStreak >= 2 && (lastMdnsLookup == 0 || lastPoll - lastMdnsLookup >= kMdnsLookupCooldownMs)) {
+        lastMdnsLookup = lastPoll;
+        if (tryResolveBridgeHost(streaming)) {
+          lastPoll = 0;
+          interval = 0;
+        }
+      }
     }
     if (connected && streaming) {
       fillStream();
@@ -494,6 +543,25 @@ void netWorkerBegin(const char* ssid, const char* password, const char* pollUrl)
   gSsid = ssid ? ssid : "";
   gPassword = password ? password : "";
   gPollUrl = pollUrl ? pollUrl : "";
+  gMdnsHost = normalizeMdnsHost(kBridgeMdnsHost);
+  if (gMdnsHost.empty()) {
+    const std::string urlHost = extractUrlHost(gPollUrl.c_str());
+    if (urlHost.size() > 6 && urlHost.compare(urlHost.size() - 6, 6, ".local") == 0) {
+      gMdnsHost = normalizeMdnsHost(urlHost.c_str());
+    }
+  }
+  {
+    Preferences prefs;
+    if (prefs.begin("net_cache", true)) {
+      const String cachedIp = prefs.getString("bridge_ip", "");
+      prefs.end();
+      if (cachedIp.length() > 0) {
+        gSavedBridgeIp = cachedIp.c_str();
+        gPollUrl = replaceUrlHost(gPollUrl.c_str(), gSavedBridgeIp.c_str());
+        Serial.printf("[BRIDGE] loaded cached IP from NVS: %s\n", gSavedBridgeIp.c_str());
+      }
+    }
+  }
   WiFi.mode(WIFI_STA);
   WiFi.persistent(false);
   WiFi.setAutoReconnect(true);

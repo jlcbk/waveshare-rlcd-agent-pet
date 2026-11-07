@@ -14,6 +14,10 @@ static constexpr const char* kBridgeUrl =
     "http://<bridge-host>:17366/esp32/poll?token=<token>";
 #endif
 
+#ifndef kBridgeMdnsHost
+static constexpr const char* kBridgeMdnsHost = "cuis-Mac-mini";
+#endif
+
 static constexpr uint32_t kBridgePollMs = 3000;
 static constexpr uint32_t kIdlePollMs = 10000;    // MEDIUM tier (1..10 min unchanged)
 static constexpr uint32_t kSlowPollMs = 30000;    // SLOW tier (10..30 min unchanged)

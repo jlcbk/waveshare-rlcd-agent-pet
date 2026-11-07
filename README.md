@@ -36,6 +36,7 @@
 
 - **Wi-Fi 最大调制解调器睡眠 + Beacon 间隔拉长**：常态启用 `WIFI_PS_MAX_MODEM` 并将 `listen_interval` 设为 `10`（约 1 秒唤醒收听一次路由器 Beacon），仅在彩蛋视频流下载期间临时切换为 `WIFI_PS_NONE`。
 - **HTTP Keep-Alive 长连接复用**：固件端复用持久化 `WiFiClient` + `HTTPClient::setReuse(true)`，配合 Mac Bridge 的 30 秒 `keepAliveTimeout` 与显式 `Content-Length`，省去每次轮询的 TCP 三次握手与四次挥手，缩短射频高功耗 TX/RX 窗口。
+- **零日常开销的按需 mDNS 自动寻址 + NVS IP 缓存**：平常直接连接缓存的 IPv4 地址（不开启后台 mDNS 监听、不消耗额外电量）；当 Mac 重启或路由器重分配 DHCP 导致连续 2 次轮询超时时，固件自动临时唤醒单次 mDNS 查询（`<LocalHostName>.local`），解析到新 IP 后立即恢复连接并写入 NVS 闪存持久化。
 - **Wi-Fi 断线指数退避**：路由器关闭或外出断网时，重连间隔按 `10s -> 20s -> 40s -> 60s -> 120s` 指数退避，避免持续高耗电全信道扫描；按任意侧键可立即重置退避并触发重连。
 
 ### 3. ST7305 反射屏硬件低功耗模式与帧哈希去重
@@ -169,7 +170,7 @@ PLATFORMIO_PACKAGES_DIR="$RLCD_PIO_PACKAGES" pio run -e waveshare_rlcd_pm -t upl
 ../../bridge/codex-pet-bridge/macos/PetBar/build.sh --install
 ```
 
-请在路由器上给 Mac 固定局域网地址（DHCP 保留），因为这个地址会编进固件。如果旧的代码目录里 `include/app_config.h` 还写着真实配置，可以用 `tools/import-legacy-secrets.sh <旧的 app_config.h>` 代替第 2 步，把值搬进 `secrets.h`。
+`tools/make-secrets.sh` 会自动写入当前局域网 IP 和 Mac 的 Bonjour 主机名（`kBridgeMdnsHost`）；后续即使 Mac 重启后局域网 IP 变化，板子也会通过按需 mDNS 自动发现新 IP 并缓存进 NVS。如果旧的代码目录里 `include/app_config.h` 还写着真实配置，可以用 `tools/import-legacy-secrets.sh <旧的 app_config.h>` 代替第 2 步，把值搬进 `secrets.h`。
 
 bridge 在任何装有 Node 20 的机器上都能跑：`node bridge/codex-pet-bridge/src/bridge-server.js` 默认只监听 `127.0.0.1`，不需要令牌。要在局域网里用，请看 [bridge/codex-pet-bridge/docs/SECURITY.md](bridge/codex-pet-bridge/docs/SECURITY.md)。
 
