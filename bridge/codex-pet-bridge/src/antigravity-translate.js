@@ -19,6 +19,79 @@ export function str(value) {
   return "";
 }
 
+export function sanitizeAsciiSummary(value) {
+  const raw = str(value).replace(/^["'\s]+|["'\s]+$/g, "");
+  if (!raw) return "";
+  let out = "";
+  let lastSpace = false;
+  let hasAlphaNum = false;
+  for (let i = 0; i < raw.length; i++) {
+    const code = raw.charCodeAt(i);
+    if (code < 32 || code > 126) {
+      if (!lastSpace && out.length > 0) {
+        out += " ";
+        lastSpace = true;
+      }
+      continue;
+    }
+    const ch = raw[i];
+    if (ch === " ") {
+      if (!lastSpace && out.length > 0) {
+        out += " ";
+        lastSpace = true;
+      }
+      continue;
+    }
+    out += ch;
+    lastSpace = false;
+    if ((ch >= "0" && ch <= "9") || (ch >= "A" && ch <= "Z") || (ch >= "a" && ch <= "z")) {
+      hasAlphaNum = true;
+    }
+  }
+  out = out.trim();
+  return hasAlphaNum ? out : "";
+}
+
+function cleanTranscriptArg(value) {
+  return str(value).replace(/^["'\s]+|["'\s]+$/g, "");
+}
+
+export function summarizeAntigravityToolCall(tc) {
+  if (!tc || typeof tc !== "object") return "";
+  const name = str(tc.name);
+  if (!name) return "";
+  const args =
+    tc.args && typeof tc.args === "object"
+      ? tc.args
+      : tc.arguments && typeof tc.arguments === "object"
+        ? tc.arguments
+        : {};
+  if (name === "run_command") {
+    const summary = sanitizeAsciiSummary(cleanTranscriptArg(args.toolSummary));
+    if (summary) return summary;
+  }
+  if (
+    name === "read_file" ||
+    name === "edit_file" ||
+    name === "write_file" ||
+    name === "multi_replace_file_content" ||
+    name === "replace_file_content" ||
+    name === "view_file_outline"
+  ) {
+    const rawPath = cleanTranscriptArg(args.Path || args.TargetFile || args.File);
+    const base = rawPath.split(/[\\/]/).filter(Boolean).at(-1) || "";
+    const verb =
+      name.startsWith("read") || name.startsWith("view")
+        ? "read"
+        : name.startsWith("write")
+          ? "write"
+          : "edit";
+    const summary = sanitizeAsciiSummary(base ? `${verb} ${base}` : name);
+    if (summary) return summary;
+  }
+  return sanitizeAsciiSummary(name);
+}
+
 export function num(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
@@ -109,6 +182,7 @@ export function inferAntigravityRealtimeFromTranscriptLines(lines = []) {
   let pendingToolCalls = 0;
   let completedToolCalls = 0;
   let lastTool = "";
+  let lastDetail = "";
 
   for (const rawLine of lines) {
     const line = String(rawLine || "").trim();
@@ -128,7 +202,8 @@ export function inferAntigravityRealtimeFromTranscriptLines(lines = []) {
       pendingToolCalls = 0;
       completedToolCalls = 0;
       lastTool = "";
-      state = { status: "thinking", tool: "", time };
+      lastDetail = "";
+      state = { status: "thinking", tool: "", detail: "", time };
       continue;
     }
 
@@ -137,23 +212,27 @@ export function inferAntigravityRealtimeFromTranscriptLines(lines = []) {
       if (status === "ERROR") {
         pendingToolCalls = 0;
         completedToolCalls = 0;
-        state = { status: "failed", tool: "", time };
+        lastDetail = "";
+        state = { status: "failed", tool: "", detail: "", time };
       } else if (toolCalls.length > 0) {
         pendingToolCalls = toolCalls.length;
         completedToolCalls = 0;
-        lastTool = str(toolCalls.at(-1)?.name);
+        const lastCall = toolCalls.at(-1);
+        lastTool = str(lastCall?.name);
+        lastDetail = summarizeAntigravityToolCall(lastCall);
         const toolStatus =
           lastTool === "ask_question" ? "needs-attention" : toolStatusForName(lastTool);
-        state = { status: toolStatus, tool: lastTool, time };
+        state = { status: toolStatus, tool: lastTool, detail: lastDetail, time };
       } else if (status === "RUNNING") {
         pendingToolCalls = 0;
         completedToolCalls = 0;
-        state = { status: "thinking", tool: "", time };
+        state = { status: "thinking", tool: "", detail: lastDetail, time };
       } else {
         pendingToolCalls = 0;
         completedToolCalls = 0;
         lastTool = "";
-        state = { status: "completed", tool: "", time };
+        lastDetail = "";
+        state = { status: "completed", tool: "", detail: "", time };
       }
       continue;
     }
@@ -162,15 +241,15 @@ export function inferAntigravityRealtimeFromTranscriptLines(lines = []) {
       if (status === "RUNNING") {
         const toolStatus =
           lastTool === "ask_question" ? "needs-attention" : toolStatusForName(lastTool);
-        state = { status: toolStatus, tool: lastTool, time };
+        state = { status: toolStatus, tool: lastTool, detail: lastDetail, time };
       } else if (status === "DONE" || status === "ERROR") {
         completedToolCalls += 1;
         if (pendingToolCalls > 0 && completedToolCalls < pendingToolCalls) {
           const toolStatus =
             lastTool === "ask_question" ? "needs-attention" : toolStatusForName(lastTool);
-          state = { status: toolStatus, tool: lastTool, time };
+          state = { status: toolStatus, tool: lastTool, detail: lastDetail, time };
         } else {
-          state = { status: "thinking", tool: lastTool, time };
+          state = { status: "thinking", tool: lastTool, detail: lastDetail, time };
         }
       }
     }

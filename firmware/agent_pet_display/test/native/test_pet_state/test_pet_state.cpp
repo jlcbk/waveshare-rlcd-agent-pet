@@ -440,6 +440,11 @@ void test_antigravity_and_dynamic_raw_source_get_labels(void) {
   const DisplayState agyView = deriveDisplayState(agent, power, environment, ScreenPage::Overview);
   TEST_ASSERT_EQUAL_STRING("ANTIGRAVITY", agyView.sourceLabel.c_str());
   TEST_ASSERT_EQUAL_STRING("ANTIGRAVITY WORK", agyView.sidebarAgent.c_str());
+  TEST_ASSERT_EQUAL_STRING("BRIDGE OK", agyView.bridgeLine.c_str());
+
+  agent.project = "RLCD_firm1";
+  const DisplayState projView = deriveDisplayState(agent, power, environment, ScreenPage::Overview);
+  TEST_ASSERT_EQUAL_STRING("RLCD_firm1", projView.bridgeLine.c_str());
 
   agent.source = SourceKind::Unknown;
   agent.sourceRaw = "mac-opencode";

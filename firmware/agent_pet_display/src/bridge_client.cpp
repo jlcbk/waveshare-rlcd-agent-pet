@@ -88,6 +88,47 @@ std::string sanitizeDisplayText(const char* value, SourceKind source) {
   return output;
 }
 
+std::string sanitizeProjectText(const char* value) {
+  if (!value || !value[0]) {
+    return "";
+  }
+  std::string raw(value);
+  while (!raw.empty() && (raw.back() == '/' || raw.back() == '\\')) {
+    raw.pop_back();
+  }
+  const size_t slashPos = raw.find_last_of("/\\");
+  if (slashPos != std::string::npos) {
+    raw = raw.substr(slashPos + 1);
+  }
+
+  std::string output;
+  bool lastWasSpace = false;
+  bool hasAlphaNum = false;
+  for (const unsigned char ch : raw) {
+    if (!isDisplayAscii(ch)) {
+      if (!lastWasSpace && !output.empty()) {
+        output.push_back(' ');
+        lastWasSpace = true;
+      }
+      continue;
+    }
+    const char ascii = static_cast<char>(ch);
+    if (ascii == ' ') {
+      if (!lastWasSpace && !output.empty()) {
+        output.push_back(' ');
+        lastWasSpace = true;
+      }
+      continue;
+    }
+    output.push_back(ascii);
+    lastWasSpace = false;
+    hasAlphaNum = hasAlphaNum || isAsciiAlphaNum(ascii);
+  }
+
+  output = trimSpaces(output);
+  return hasAlphaNum ? output : std::string();
+}
+
 }  // namespace
 
 SourceKind parseSourceKind(const char* value) {
@@ -215,18 +256,21 @@ bool fillAgentState(const JsonDocument& doc, AgentState& outState) {
 
   const char* currentSource = doc["source"].as<const char*>();
   const char* currentStatus = doc["current_status"].as<const char*>();
+  const char* currentProject = doc["project"].as<const char*>();
   const char* currentTask = doc["task"].as<const char*>();
   const char* currentUpdatedAt = doc["updated_at"].as<const char*>();
 
+  const char* project = currentProject;
   source = currentSource;
   status = currentStatus;
   task = currentTask;
   updatedAt = currentUpdatedAt;
 
   if ((!source || !source[0] || !status || !status[0] || strcmp(status, "event") == 0 ||
-       !task || !task[0] || !updatedAt || !updatedAt[0]) && !notification.isNull()) {
+       !task || !task[0] || !updatedAt || !updatedAt[0] || !project || !project[0]) && !notification.isNull()) {
     const char* notificationSource = notification["source"].as<const char*>();
     const char* notificationStatus = notification["status"].as<const char*>();
+    const char* notificationProject = notification["project"].as<const char*>();
     const char* notificationTask = notification["task"].as<const char*>();
     const char* notificationUpdatedAt = notification["time"].as<const char*>();
 
@@ -236,6 +280,10 @@ bool fillAgentState(const JsonDocument& doc, AgentState& outState) {
     if ((!status || !status[0] || strcmp(status, "event") == 0) &&
         notificationStatus && notificationStatus[0] && strcmp(notificationStatus, "event") != 0) {
       status = notificationStatus;
+    }
+    if ((!project || !project[0]) && (!currentSource || !currentSource[0]) &&
+        notificationProject && notificationProject[0]) {
+      project = notificationProject;
     }
     if ((!task || !task[0])) {
       task = notificationTask;
@@ -259,6 +307,7 @@ bool fillAgentState(const JsonDocument& doc, AgentState& outState) {
   outState.sourceRaw = std::string(source ? source : "");
   outState.status = parseAgentStatus(status);
   outState.statusDetail = parseAgentStatusDetail(status);
+  outState.project = sanitizeProjectText(project);
   outState.task = sanitizeDisplayText(task, outState.source);
   outState.updatedAt = std::string(updatedAt ? updatedAt : "");
   outState.focusMode =
@@ -281,6 +330,7 @@ bool fillAgentState(const JsonDocument& doc, AgentState& outState) {
     outSlot.source = parseSourceKind(slotSource);
     outSlot.sourceRaw = std::string(slotSource ? slotSource : "");
     outSlot.status = parseAgentStatus(slot["status"].as<const char*>());
+    outSlot.project = sanitizeProjectText(slot["project"].as<const char*>());
     outSlot.task = sanitizeDisplayText(slot["task"].as<const char*>(), outSlot.source);
     outSlot.updatedAt =
         std::string(slot["updated_at"].as<const char*>() ? slot["updated_at"].as<const char*>() : "");

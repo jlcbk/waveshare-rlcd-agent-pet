@@ -22,6 +22,7 @@ import {
   antigravityShortModelName,
   formatResetCountdown,
   quotaSummary,
+  sanitizeAsciiSummary,
   translateHook
 } from "./antigravity-translate.js";
 import {
@@ -669,6 +670,31 @@ async function agentView(options = {}) {
   return promise;
 }
 
+const FINE_ACTIVE_STATUSES = new Set(["thinking", "tool-use", "searching", "needs-attention", "working"]);
+
+function enrichWithRealtime(item, realtimes, slots = []) {
+  if (!item) return null;
+  const family = sourceFamily(item.source);
+  const rt = realtimes.find((candidate) => sourceFamily(candidate?.source) === family) || null;
+  const slot = slots.find((candidate) => sourceFamily(candidate?.source) === family) || null;
+  const enriched = {
+    ...item,
+    workspace: item.workspace || rt?.workspace || slot?.workspace || "",
+    sessionId: item.sessionId || rt?.sessionId || slot?.sessionId || "",
+    tool: item.tool || rt?.tool || slot?.tool || "",
+    detail: item.detail || rt?.detail || slot?.detail || ""
+  };
+  if (
+    enriched.status === "running" &&
+    isGenericSessionTask(enriched.task) &&
+    rt?.status &&
+    FINE_ACTIVE_STATUSES.has(rt.status)
+  ) {
+    enriched.status = rt.status;
+  }
+  return enriched;
+}
+
 async function buildAgentView(options = {}) {
   const eventCurrent = recentEvents.at(-1) || null;
   const latestCodexEvent = [...recentEvents].reverse().find((item) => sourceFamily(item.source) === "codex") || null;
@@ -678,19 +704,48 @@ async function buildAgentView(options = {}) {
   const claudeRealtime = await loadClaudeRealtimeCached();
   const antigravityRealtime = await loadAntigravityRealtimeCached(latestAntigravityEvent);
   const realtimes = [codexRealtime, claudeRealtime, antigravityRealtime].filter(Boolean);
-  const autoCurrent = pickAutoCurrent(eventCurrent, realtimes);
-  const visibleSlots = pruneAndCapSlots(buildVisibleAgentSlots(recentEvents, realtimes), {
+  const rawVisibleSlots = pruneAndCapSlots(buildVisibleAgentSlots(recentEvents, realtimes), {
     maxSlots: MAX_DEVICE_SLOTS,
     maxAgeMs: SLOT_MAX_AGE_MS
   });
+  const visibleSlots = rawVisibleSlots.map((slot) => enrichWithRealtime(slot, realtimes));
+  const autoCurrent = enrichWithRealtime(pickAutoCurrent(eventCurrent, realtimes), realtimes, visibleSlots);
   const selected = resolveFocusSelection({
     focus: options.focus,
     slots: visibleSlots,
     autoCurrent: slotStateFromCurrent(autoCurrent)
   });
-  const current = materializeCurrentState(selected, autoCurrent);
+  const current = enrichWithRealtime(materializeCurrentState(selected, autoCurrent), realtimes, visibleSlots);
   const usage = await loadUsageSummary(current, claudeRealtime, antigravityRealtime);
   return { selected, current, visibleSlots, usage, codexRealtime, claudeRealtime, antigravityRealtime };
+}
+
+function resolveDeviceProject(item) {
+  if (!item) return "";
+  return sanitizeAsciiSummary(slugFromPath(item.workspace) || item.project || "");
+}
+
+function isGenericSessionTask(task) {
+  const text = String(task || "").trim();
+  if (!text || text === "agent-task") return true;
+  return /-(?:antigravity|claude|codex|hermes|openclaw)-(?:session|runtime)$/i.test(text);
+}
+
+function resolveDeviceTask(item) {
+  if (!item) return "";
+  const project = resolveDeviceProject(item);
+  const detail = sanitizeAsciiSummary(item.detail || item.tool || "");
+  const rawTask = String(item.task || "").trim();
+  const asciiTask = sanitizeAsciiSummary(rawTask);
+  const isGeneric = isGenericSessionTask(asciiTask);
+  const isActive = item.status && item.status !== "completed" && item.status !== "idle";
+  if (detail && isActive && (isGeneric || asciiTask === project)) {
+    return detail;
+  }
+  if (asciiTask && !isGeneric) {
+    return asciiTask;
+  }
+  return project || detail || asciiTask || rawTask;
 }
 
 async function compactDeviceState(options = {}) {
@@ -700,7 +755,8 @@ async function compactDeviceState(options = {}) {
     ok: true,
     unread_count: unreadNotifications().length,
     source: current?.source || "",
-    task: current?.task || "",
+    project: resolveDeviceProject(current),
+    task: resolveDeviceTask(current),
     updated_at: current?.time || "",
     current_status: current?.status || "idle",
     focus_mode: selected.mode,
@@ -717,7 +773,8 @@ function compactAgentSlot(slot) {
   return {
     id: slot.id,
     source: slot.source,
-    task: slot.task,
+    project: resolveDeviceProject(slot),
+    task: resolveDeviceTask(slot),
     status: slot.status,
     updated_at: slot.updated_at
   };
@@ -732,7 +789,7 @@ function compactNotification(notification) {
     priority: notification.priority,
     title: notification.title,
     message: notification.message,
-    project: notification.workspace,
+    project: slugFromPath(notification.workspace) || notification.workspace,
     time: notification.time
   };
 }
@@ -745,7 +802,9 @@ function slotStateFromCurrent(current) {
     status: current.status || "idle",
     updated_at: current.time || "",
     sessionId: current.sessionId || "",
-    workspace: current.workspace || ""
+    workspace: current.workspace || "",
+    tool: current.tool || "",
+    detail: current.detail || ""
   };
 }
 
@@ -761,7 +820,9 @@ function materializeCurrentState(selected, autoCurrent) {
     status: current.status || "idle",
     time: current.updated_at || "",
     sessionId: current.sessionId || "",
-    workspace: current.workspace || ""
+    workspace: current.workspace || "",
+    tool: current.tool || "",
+    detail: current.detail || ""
   };
 }
 
@@ -927,7 +988,7 @@ async function loadAntigravityUsageSummary(antigravityRealtime) {
     context: context ? `${abbrevNumber(context.used)} / ${abbrevNumber(context.window)}` : "--",
     quota: hasQuota ? quotaText : model || "--",
     todayLabel: "TODAY",
-    todayHint: "Antigravity tokens today, no cache reads",
+    todayHint: "Antigravity tokens today (incl. cache)",
     contextLabel: "CONTEXT",
     contextHint: "Current turn context / model window",
     quotaLabel: hasQuota ? "QUOTA" : "MODEL",
@@ -1124,7 +1185,8 @@ async function loadCodexUsageSummary() {
 }
 
 async function loadCodexRealtimeState(latestCodexEvent) {
-  const rolloutPath = await latestTopLevelRolloutPath();
+  const thread = await latestTopLevelThread();
+  const rolloutPath = thread?.rollout_path || "";
   if (!rolloutPath) return null;
   try {
     const { stdout } = await execFileAsync("tail", ["-n", "240", rolloutPath], { maxBuffer: 8 * 1024 * 1024 });
@@ -1137,27 +1199,38 @@ async function loadCodexRealtimeState(latestCodexEvent) {
     } else if (ageMs > CODEX_REALTIME_ACTIVE_MS) {
       return null;
     }
+    const workspace = latestCodexEvent?.workspace || CODEX_THREAD_CWD || thread?.cwd || "";
     return {
       source: latestCodexEvent?.source || `${CODEX_SOURCE_PREFIX}-codex`,
-      task: latestCodexEvent?.task || `${CODEX_SOURCE_PREFIX}-codex-runtime`,
+      task: latestCodexEvent?.task || slugFromPath(workspace) || `${CODEX_SOURCE_PREFIX}-codex-runtime`,
       status: realtime.status,
       time: realtime.time,
-      sessionId: latestCodexEvent?.sessionId || "",
-      workspace: latestCodexEvent?.workspace || CODEX_THREAD_CWD || ""
+      tool: realtime.tool || "",
+      detail: realtime.detail || realtime.tool || "",
+      sessionId: latestCodexEvent?.sessionId || thread?.id || "",
+      workspace
     };
   } catch {
     return null;
   }
 }
 
-async function latestTopLevelRolloutPath() {
+async function latestTopLevelThread() {
   const clauses = ["rollout_path is not null", "source not like '{%'"];
   if (CODEX_THREAD_CWD) {
     clauses.push(`cwd = '${sqlEscape(CODEX_THREAD_CWD)}'`);
   }
-  const query = `select rollout_path from threads where ${clauses.join(" and ")} order by rowid desc limit 1;`;
+  const query = `select id, cwd, rollout_path from threads where ${clauses.join(" and ")} order by rowid desc limit 1;`;
   const rows = await runSqliteQuery(query);
-  return rows[0]?.rollout_path || "";
+  if (rows[0]) return rows[0];
+  const fallbackQuery = `select rollout_path from threads where ${clauses.join(" and ")} order by rowid desc limit 1;`;
+  const fallbackRows = await runSqliteQuery(fallbackQuery);
+  return fallbackRows[0] || null;
+}
+
+async function latestTopLevelRolloutPath() {
+  const thread = await latestTopLevelThread();
+  return thread?.rollout_path || "";
 }
 
 async function sumTodayTopLevelTokens() {

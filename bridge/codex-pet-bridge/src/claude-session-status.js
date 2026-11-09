@@ -31,6 +31,23 @@ function contentBlocks(message) {
   return [];
 }
 
+function summarizeClaudeToolUse(toolUse) {
+  if (!toolUse || typeof toolUse !== "object") return "";
+  const name = String(toolUse.name || "").trim();
+  if (!name) return "";
+  const input = toolUse.input && typeof toolUse.input === "object" ? toolUse.input : {};
+  const rawPath = String(input.file_path || input.path || input.notebook_path || "").trim();
+  if (rawPath) {
+    const base = rawPath.split(/[\\/]/).filter(Boolean).at(-1) || "";
+    if (base) return `${name} ${base}`;
+  }
+  const desc = String(input.description || "").trim();
+  if (desc) return `${name}: ${desc}`;
+  const pattern = String(input.pattern || "").trim();
+  if (pattern) return `${name}: ${pattern}`;
+  return name;
+}
+
 // State from the newest meaningful transcript entry.
 export function inferClaudeStateFromEntries(entries) {
   for (let index = entries.length - 1; index >= 0; index -= 1) {
@@ -41,7 +58,14 @@ export function inferClaudeStateFromEntries(entries) {
       const message = entry.message || {};
       const blocks = contentBlocks(message);
       const toolUse = [...blocks].reverse().find((block) => block?.type === "tool_use");
-      if (toolUse) return { status: toolStatus(toolUse.name), time, tool: String(toolUse.name || "") };
+      if (toolUse) {
+        return {
+          status: toolStatus(toolUse.name),
+          time,
+          tool: String(toolUse.name || ""),
+          detail: summarizeClaudeToolUse(toolUse)
+        };
+      }
       if (message.stop_reason === "end_turn" || message.stop_reason === "stop_sequence") {
         return { status: "completed", time };
       }
@@ -183,6 +207,7 @@ export async function loadClaudeRealtimeState({
     status: state.status,
     time: state.time,
     tool: state.tool || "",
+    detail: state.detail || state.tool || "",
     sessionId: String(last.sessionId || latest.sessionId || ""),
     workspace: String(last.cwd || ""),
     model,

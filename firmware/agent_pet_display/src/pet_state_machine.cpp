@@ -325,6 +325,9 @@ int wifiIconLevelFor(const NetworkState& network) {
 
 std::string bridgeLineText(const AgentState& agent, const NetworkState& network) {
   if (agent.connected) {
+    if (!agent.project.empty()) {
+      return agent.project;
+    }
     return "BRIDGE OK";
   }
   if (network.wifiKnown && !network.wifiConnected) {

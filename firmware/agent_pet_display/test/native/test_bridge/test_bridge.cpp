@@ -474,9 +474,10 @@ void test_egg_request_is_reported_only_when_set(void) {
 
 void test_antigravity_payload_maps_to_antigravity_source_and_preserves_raw(void) {
   const char* json =
-      "{\"ok\":true,\"unread_count\":0,\"source\":\"mac-antigravity\",\"task\":\"\xE4\xB8\xAD\xE6\x96\x87\","
+      "{\"ok\":true,\"unread_count\":0,\"source\":\"mac-antigravity\",\"project\":\"RLCD_firm1\","
+      "\"task\":\"\xE4\xB8\xAD\xE6\x96\x87\","
       "\"updated_at\":\"2026-10-29T10:30:00Z\",\"current_status\":\"working\","
-      "\"agents\":[{\"id\":\"mac-antigravity\",\"source\":\"mac-antigravity\",\"status\":\"working\"}]}";
+      "\"agents\":[{\"id\":\"mac-antigravity\",\"source\":\"mac-antigravity\",\"project\":\"RLCD_firm1\",\"status\":\"working\"}]}";
   AgentState state{};
 
   const bool ok = parseAgentStatePayload(json, state);
@@ -484,9 +485,11 @@ void test_antigravity_payload_maps_to_antigravity_source_and_preserves_raw(void)
   TEST_ASSERT_TRUE(ok);
   TEST_ASSERT_EQUAL(static_cast<int>(SourceKind::Antigravity), static_cast<int>(state.source));
   TEST_ASSERT_EQUAL_STRING("mac-antigravity", state.sourceRaw.c_str());
+  TEST_ASSERT_EQUAL_STRING("RLCD_firm1", state.project.c_str());
   TEST_ASSERT_EQUAL_STRING("ANTIGRAVITY SESSION", state.task.c_str());
   TEST_ASSERT_EQUAL(static_cast<int>(SourceKind::Antigravity), static_cast<int>(state.agentSlots[0].source));
   TEST_ASSERT_EQUAL_STRING("mac-antigravity", state.agentSlots[0].sourceRaw.c_str());
+  TEST_ASSERT_EQUAL_STRING("RLCD_firm1", state.agentSlots[0].project.c_str());
 }
 
 int main(void) {

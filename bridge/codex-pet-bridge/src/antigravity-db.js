@@ -300,6 +300,41 @@ function parseContext(buf) {
   return { current, max };
 }
 
+function parseTimestampMs(buf) {
+  const fields = walkFields(buf);
+  if (!fields) return null;
+  let seconds = null;
+  let nanos = 0;
+  for (const f of fields) {
+    if (f.wire !== WIRE_VARINT) continue;
+    if (f.no === 1) seconds = toSafeNumber(f.value);
+    else if (f.no === 2) nanos = toSafeNumber(f.value) || 0;
+  }
+  if (seconds === null || seconds <= 0) return null;
+  return seconds * 1000 + Math.floor(nanos / 1e6);
+}
+
+/**
+ * Decode one steps.metadata blob (for step_type = 15 generation steps).
+ * Field 1 is google.protobuf.Timestamp; Field 9 is Usage.
+ */
+export function decodeStepMeta(buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) return null;
+  const top = walkFields(buffer);
+  if (!top) return null;
+  const tsBuf = lastLenField(top, 1);
+  const timestampMs = tsBuf ? parseTimestampMs(tsBuf) : null;
+  const usageBuf = lastLenField(top, 9);
+  if (!usageBuf) return null;
+  const parsed = parseUsage(usageBuf);
+  if (!parsed) return null;
+  return {
+    timestampMs,
+    modelEnum: parsed.modelEnum,
+    usage: parsed.usage
+  };
+}
+
 /**
  * Decode one gen_metadata.data blob into a plain summary object.
  * Tolerant: unknown fields are skipped; malformed input returns null, never throws.
@@ -395,28 +430,18 @@ function dbFingerprint(dbPath) {
 
 async function readConversationUncached(dbPath, fingerprint) {
   const cached = conversationCache.get(dbPath) || null;
-  const stepRows = await sqliteQuery(
+  let stepRows = await sqliteQuery(
     dbPath,
-    "SELECT idx, step_type, status FROM steps ORDER BY idx"
+    "SELECT idx, step_type, status, CASE WHEN step_type = 15 THEN hex(metadata) ELSE NULL END AS meta_hex FROM steps ORDER BY idx"
   );
+  if (stepRows === null) {
+    stepRows = await sqliteQuery(dbPath, "SELECT idx, step_type, status FROM steps ORDER BY idx");
+  }
   if (stepRows === null) return null;
-
-  const canIncremental =
-    cached &&
-    stepRows.length >= cached.stepTotal &&
-    Number.isInteger(cached.lastMetaIdx);
-  const minMetaIdx = canIncremental ? cached.lastMetaIdx : -1;
-
-  const metaRows = await sqliteQuery(
-    dbPath,
-    minMetaIdx >= 0
-      ? `SELECT idx, hex(data) AS data_hex FROM gen_metadata WHERE idx > ${minMetaIdx} ORDER BY idx`
-      : "SELECT idx, hex(data) AS data_hex FROM gen_metadata ORDER BY idx"
-  );
-  if (metaRows === null) return null;
 
   const counts = {};
   let lastStep = null;
+  const stepUsages = [];
   for (const row of stepRows) {
     const idx = Number(row.idx);
     const stepType = Number(row.step_type);
@@ -424,40 +449,86 @@ async function readConversationUncached(dbPath, fingerprint) {
     const key = String(stepType);
     counts[key] = (counts[key] ?? 0) + 1;
     lastStep = { idx, stepType, status };
-  }
-
-  const totals = canIncremental
-    ? { ...cached.totals }
-    : { input: 0, cacheRead: 0, thinking: 0, output: 0, totalOutput: 0 };
-  let count = canIncremental ? cached.count : 0;
-  let skipped = canIncremental ? cached.skipped : 0;
-  let lastGen = canIncremental ? cached.lastGen : null;
-  let lastMetaIdx = canIncremental ? cached.lastMetaIdx : -1;
-
-  for (const row of metaRows) {
-    const rowIdx = Number(row.idx);
-    if (Number.isInteger(rowIdx) && rowIdx > lastMetaIdx) {
-      lastMetaIdx = rowIdx;
-    }
-    if (row.data_hex == null) {
-      skipped++;
-      continue;
-    }
-    const buf = Buffer.from(String(row.data_hex), "hex");
-    const meta = decodeGenerationMeta(buf);
-    if (!meta) {
-      skipped++;
-      continue;
-    }
-    count++;
-    lastGen = meta;
-    for (const key of Object.keys(totals)) {
-      const v = meta.usage[key];
-      totals[key] += typeof v === "number" && Number.isSafeInteger(v) && v > 0 ? v : 0;
+    if (stepType === 15 && row.meta_hex) {
+      const sm = decodeStepMeta(Buffer.from(String(row.meta_hex), "hex"));
+      if (sm?.usage) {
+        stepUsages.push({ idx, timestampMs: sm.timestampMs, usage: sm.usage });
+      }
     }
   }
 
-  let workspace = canIncremental && cached.workspace ? cached.workspace : "";
+  let totals;
+  let count = 0;
+  let skipped = 0;
+  let lastGen = null;
+  let lastMetaIdx = -1;
+
+  if (stepUsages.length > 0) {
+    totals = { input: 0, cacheRead: 0, thinking: 0, output: 0, totalOutput: 0 };
+    count = stepUsages.length;
+    for (const s of stepUsages) {
+      if (Number.isInteger(s.idx) && s.idx > lastMetaIdx) lastMetaIdx = s.idx;
+      for (const key of Object.keys(totals)) {
+        const v = s.usage[key];
+        totals[key] += typeof v === "number" && Number.isSafeInteger(v) && v > 0 ? v : 0;
+      }
+    }
+    const lastMetaRows = await sqliteQuery(
+      dbPath,
+      "SELECT idx, hex(data) AS data_hex FROM gen_metadata ORDER BY idx DESC LIMIT 1"
+    );
+    if (lastMetaRows?.[0]?.data_hex) {
+      lastGen = decodeGenerationMeta(Buffer.from(String(lastMetaRows[0].data_hex), "hex"));
+    }
+  } else {
+    const canIncremental =
+      cached &&
+      !cached.usedStepMeta &&
+      stepRows.length >= cached.stepTotal &&
+      Number.isInteger(cached.lastMetaIdx);
+    const minMetaIdx = canIncremental ? cached.lastMetaIdx : -1;
+
+    const metaRows = await sqliteQuery(
+      dbPath,
+      minMetaIdx >= 0
+        ? `SELECT idx, hex(data) AS data_hex FROM gen_metadata WHERE idx > ${minMetaIdx} ORDER BY idx`
+        : "SELECT idx, hex(data) AS data_hex FROM gen_metadata ORDER BY idx"
+    );
+    if (metaRows === null) return null;
+
+    totals = canIncremental
+      ? { ...cached.totals }
+      : { input: 0, cacheRead: 0, thinking: 0, output: 0, totalOutput: 0 };
+    count = canIncremental ? cached.count : 0;
+    skipped = canIncremental ? cached.skipped : 0;
+    lastGen = canIncremental ? cached.lastGen : null;
+    lastMetaIdx = canIncremental ? cached.lastMetaIdx : -1;
+
+    for (const row of metaRows) {
+      const rowIdx = Number(row.idx);
+      if (Number.isInteger(rowIdx) && rowIdx > lastMetaIdx) {
+        lastMetaIdx = rowIdx;
+      }
+      if (row.data_hex == null) {
+        skipped++;
+        continue;
+      }
+      const buf = Buffer.from(String(row.data_hex), "hex");
+      const meta = decodeGenerationMeta(buf);
+      if (!meta) {
+        skipped++;
+        continue;
+      }
+      count++;
+      lastGen = meta;
+      for (const key of Object.keys(totals)) {
+        const v = meta.usage[key];
+        totals[key] += typeof v === "number" && Number.isSafeInteger(v) && v > 0 ? v : 0;
+      }
+    }
+  }
+
+  let workspace = cached?.workspace || "";
   if (!workspace) {
     const trajRows = await sqliteQuery(
       dbPath,
@@ -471,12 +542,14 @@ async function readConversationUncached(dbPath, fingerprint) {
   const result = {
     steps: { total: stepRows.length, counts, last: lastStep },
     generations: { count, skipped, last: lastGen, totals: { ...totals } },
+    stepUsages,
     workspace
   };
 
   if (fingerprint) {
     conversationCache.set(dbPath, {
       fingerprint,
+      usedStepMeta: stepUsages.length > 0,
       stepTotal: stepRows.length,
       lastMetaIdx,
       totals: { ...totals },
@@ -601,6 +674,7 @@ export async function loadAntigravityRealtimeState({
       hookCandidate = {
         status: eff.status,
         tool: eff.tool || hookEvent.tool || "",
+        detail: eff.tool || hookEvent.tool || "",
         time: hookEvent.time || new Date(hookAt).toISOString(),
         timeMs: Date.parse(hookEvent.time || "") || hookAt,
         sessionId: hookEvent.sessionId || active?.conversationId || "",
@@ -625,6 +699,7 @@ export async function loadAntigravityRealtimeState({
         transcriptCandidate = {
           status,
           tool: parsed.tool || "",
+          detail: parsed.detail || parsed.tool || "",
           time: new Date(effectiveTimeMs).toISOString(),
           timeMs: effectiveTimeMs,
           sessionId: active.conversationId,
@@ -666,6 +741,7 @@ export async function loadAntigravityRealtimeState({
     sessionId,
     workspace,
     tool: chosen.tool || "",
+    detail: chosen.detail || chosen.tool || "",
     model,
     modelId: generation?.modelId || "",
     context,
@@ -686,15 +762,31 @@ export async function antigravityTokensToday({
   dayStart.setHours(0, 0, 0, 0);
   const startMs = dayStart.getTime();
 
-  const todayConvs = conversations.filter((item) => item.mtimeMs >= startMs).slice(0, 12);
+  const todayConvs = conversations.filter((item) => item.mtimeMs >= startMs).slice(0, 64);
   const targets = todayConvs.length ? todayConvs : [conversations[0]];
 
   let total = 0;
   for (const conv of targets) {
     const detail = await readConversation(conv.dbPath);
-    const t = detail?.generations?.totals;
-    if (t) {
-      total += (t.input || 0) + (t.thinking || 0) + (t.output || 0);
+    if (!detail) continue;
+    if (Array.isArray(detail.stepUsages) && detail.stepUsages.length > 0) {
+      for (const step of detail.stepUsages) {
+        const stepTimeMs = step.timestampMs;
+        const inToday =
+          typeof stepTimeMs === "number" && stepTimeMs > 0
+            ? stepTimeMs >= startMs
+            : conv.mtimeMs >= startMs;
+        if (!inToday) continue;
+        const u = step.usage || {};
+        total += (u.input || 0) + (u.cacheRead || 0) + (u.thinking || 0) + (u.output || 0);
+      }
+      continue;
+    }
+    if (conv.mtimeMs >= startMs) {
+      const t = detail.generations?.totals;
+      if (t) {
+        total += (t.input || 0) + (t.cacheRead || 0) + (t.thinking || 0) + (t.output || 0);
+      }
     }
   }
   return total;

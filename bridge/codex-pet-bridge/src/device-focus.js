@@ -77,6 +77,8 @@ function createSlot(item) {
     updated_at: itemTime(item) || "",
     sessionId: item.sessionId || "",
     workspace: item.workspace || "",
+    tool: item.tool || "",
+    detail: item.detail || "",
     aliasIds: [...new Set([id, ...buildSlotAliasIds(item)])]
   };
 }
@@ -125,6 +127,8 @@ function mergeSlot(slot, item) {
   const slotWasStrong = hasStrongIdentity(slot);
   if (item.sessionId) slot.sessionId = item.sessionId;
   if (item.workspace) slot.workspace = item.workspace;
+  if (item.tool && !slot.tool) slot.tool = item.tool;
+  if (item.detail && !slot.detail) slot.detail = item.detail;
   slot.id = buildSlotId(buildStableSlotKey(slot));
   if (hasStrongIdentity(item) || !slotWasStrong) {
     slot.aliasIds = [...new Set([slot.id, ...(slot.aliasIds || []), ...buildSlotAliasIds(item)])];
@@ -141,6 +145,13 @@ function mergeSlot(slot, item) {
     slot.task = item.task || slot.task;
     slot.status = item.status || slot.status;
     slot.updated_at = itemTime(item) || slot.updated_at;
+    if (item.status === "completed" || item.status === "idle") {
+      slot.tool = item.tool || "";
+      slot.detail = item.detail || "";
+    } else {
+      slot.tool = item.tool || slot.tool || "";
+      slot.detail = item.detail || slot.detail || "";
+    }
   }
 }
 

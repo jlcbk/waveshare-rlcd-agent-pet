@@ -78,6 +78,7 @@ struct AgentSlotSummary {
   std::string updatedAt{};
   bool present{false};
   std::string sourceRaw{};
+  std::string project{};
 };
 
 struct AgentState {
@@ -85,6 +86,7 @@ struct AgentState {
   std::string sourceRaw{};
   AgentStatus status{AgentStatus::Idle};
   std::string statusDetail{"idle"};
+  std::string project{};
   std::string task{};
   std::string updatedAt{};
   FocusMode focusMode{FocusMode::Auto};

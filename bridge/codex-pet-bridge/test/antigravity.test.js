@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import {
   antigravityTokensToday,
   decodeGenerationMeta,
+  decodeStepMeta,
   decodeWorkspaceMeta,
   loadAntigravityRealtimeState,
   readConversation
@@ -75,6 +76,29 @@ function buildGenMetaBlob({
     pbBytes(21, modelDisplay)
   ]);
   return pbBytes(1, gen);
+}
+
+function buildStepMetaBlob({
+  timestampMs,
+  modelEnum = 1037,
+  input = 1000,
+  cacheRead = 5000,
+  thinking = 100,
+  output = 200,
+  totalOutput = 300
+} = {}) {
+  const seconds = Math.floor(timestampMs / 1000);
+  const nanos = (timestampMs % 1000) * 1_000_000;
+  const ts = Buffer.concat([pbVarint(1, seconds), pbVarint(2, nanos)]);
+  const usage = Buffer.concat([
+    pbVarint(1, modelEnum),
+    pbVarint(2, input),
+    pbVarint(3, totalOutput),
+    pbVarint(5, cacheRead),
+    pbVarint(9, thinking),
+    pbVarint(10, output)
+  ]);
+  return Buffer.concat([pbBytes(1, ts), pbBytes(9, usage)]);
 }
 
 test("Antigravity hook translation and privacy redaction", () => {
@@ -229,20 +253,41 @@ test("Antigravity DB decoding, realtime state and bridge-server integration", as
     await mkdir(convDir, { recursive: true });
     await mkdir(logDir, { recursive: true });
 
+    const nowMs = Date.now();
+    const yesterdayStepBlob = buildStepMetaBlob({
+      timestampMs: nowMs - 2 * 86_400_000,
+      input: 99_000,
+      cacheRead: 500_000,
+      thinking: 1_000,
+      output: 2_000,
+      totalOutput: 3_000
+    });
+    const todayStepBlob = buildStepMetaBlob({
+      timestampMs: nowMs - 2_000,
+      input: 2500,
+      cacheRead: 60000,
+      thinking: 300,
+      output: 400,
+      totalOutput: 700
+    });
+    const decodedStep = decodeStepMeta(todayStepBlob);
+    assert.equal(decodedStep.usage.input, 2500);
+    assert.equal(decodedStep.usage.cacheRead, 60000);
+    assert.equal(decodedStep.timestampMs, nowMs - 2_000);
+
     const dbPath = join(convDir, "conv-ag-1.db");
     await execFileAsync("sqlite3", [
       dbPath,
       `
-        CREATE TABLE steps (idx integer primary key, step_type integer, status integer);
+        CREATE TABLE steps (idx integer primary key, step_type integer, status integer, metadata blob);
         CREATE TABLE gen_metadata (idx integer primary key, data blob, size integer);
         CREATE TABLE trajectory_metadata_blob (id text primary key, data blob);
-        INSERT INTO steps VALUES (0, 14, 2), (1, 15, 2), (2, 132, 1);
+        INSERT INTO steps VALUES (0, 15, 2, X'${yesterdayStepBlob.toString("hex")}'), (1, 15, 2, X'${todayStepBlob.toString("hex")}'), (2, 132, 1, NULL);
         INSERT INTO gen_metadata VALUES (1, X'${blob.toString("hex")}', ${blob.length});
         INSERT INTO trajectory_metadata_blob VALUES ('main', X'${wsBlob.toString("hex")}');
       `
     ]);
 
-    const nowMs = Date.now();
     const trPath = join(logDir, "transcript.jsonl");
     await writeFile(
       trPath,
@@ -252,7 +297,7 @@ test("Antigravity DB decoding, realtime state and bridge-server integration", as
           type: "PLANNER_RESPONSE",
           status: "DONE",
           created_at: new Date(nowMs - 2000).toISOString(),
-          tool_calls: [{ name: "run_command" }]
+          tool_calls: [{ name: "run_command", args: { toolSummary: "\"Build PM firmware\"" } }]
         })
       ].join("\n") + "\n"
     );
@@ -261,17 +306,18 @@ test("Antigravity DB decoding, realtime state and bridge-server integration", as
 
     const conv = await readConversation(dbPath);
     assert.equal(conv.workspace, "/Users/cui/Documents/Projects/RLCD_firm1");
-    assert.equal(conv.generations.totals.input, 2500);
+    assert.equal(conv.generations.totals.input, 99_000 + 2500);
 
     const rt = await loadAntigravityRealtimeState({ geminiDir, sourcePrefix: "mac", now: nowMs });
     assert.equal(rt.source, "mac-antigravity");
     assert.equal(rt.status, "tool-use");
     assert.equal(rt.tool, "run_command");
+    assert.equal(rt.detail, "Build PM firmware");
     assert.equal(rt.workspace, "/Users/cui/Documents/Projects/RLCD_firm1");
     assert.deepEqual(rt.context, { used: 64200, window: 256000, current: 64200, max: 256000 });
 
     const todayTok = await antigravityTokensToday({ geminiDir, now: nowMs });
-    assert.equal(todayTok, 2500 + 300 + 400);
+    assert.equal(todayTok, 2500 + 60000 + 300 + 400);
 
     const autoPicked = pickAutoCurrent(
       { source: "mac-codex", status: "completed", time: new Date(nowMs - 30_000).toISOString() },
@@ -309,7 +355,9 @@ test("Antigravity DB decoding, realtime state and bridge-server integration", as
     const poll1 = await (await fetch(`http://127.0.0.1:${port}/esp32/poll`)).json();
     assert.equal(poll1.ok, true);
     assert.equal(poll1.current_status, "tool-use");
-    assert.equal(poll1.usage.today, "3.2k tok");
+    assert.equal(poll1.project, "RLCD_firm1");
+    assert.equal(poll1.task, "Build PM firmware");
+    assert.equal(poll1.usage.today, "63.2k tok");
     assert.equal(poll1.usage.context, "64.2k / 256k");
     assert.equal(poll1.usage.quota, "Gemini 4 Argon");
 

@@ -6,6 +6,31 @@ export function inferCodexRealtimeStateFromLines(lines) {
   return null;
 }
 
+function summarizeCodexFunctionCall(payload) {
+  const name = typeof payload?.name === "string" ? payload.name.trim() : "";
+  if (!name) return "";
+  if (typeof payload.arguments === "string" && payload.arguments.trim()) {
+    try {
+      const args = JSON.parse(payload.arguments);
+      const rawCmd =
+        typeof args?.cmd === "string"
+          ? args.cmd
+          : Array.isArray(args?.command)
+            ? String(args.command.at(-1) || "")
+            : typeof args?.command === "string"
+              ? args.command
+              : "";
+      const firstLine = rawCmd.split("\n")[0].trim();
+      if (firstLine) {
+        return `${name}: ${firstLine.slice(0, 36)}`;
+      }
+    } catch {
+      // ignore non-JSON arguments
+    }
+  }
+  return name;
+}
+
 export function inferCodexRealtimeStateFromLine(line) {
   if (!line || !line.trim()) return null;
 
@@ -40,12 +65,15 @@ export function inferCodexRealtimeStateFromLine(line) {
     case "function_call_output":
       return { status: "thinking", time };
     case "web_search_call":
-      return { status: "searching", time };
-    case "function_call":
+      return { status: "searching", time, tool: "web_search", detail: "web_search" };
+    case "function_call": {
+      const tool = typeof payload.name === "string" ? payload.name : "";
+      const detail = summarizeCodexFunctionCall(payload);
       if (payload.name === "request_user_input") {
-        return { status: "needs-attention", time };
+        return { status: "needs-attention", time, tool, detail };
       }
-      return { status: "tool-use", time };
+      return { status: "tool-use", time, tool, detail };
+    }
     case "message":
       if (payload.role === "user" || payload.role === "assistant") {
         return { status: "thinking", time };
@@ -74,12 +102,18 @@ export function pickCurrentState(eventCurrent, codexRealtime) {
   }
 
   if (eventCurrent) {
-    return {
+    const out = {
       source: eventCurrent.source || "",
       task: eventCurrent.task || "",
       status: eventCurrent.status || "idle",
       time: eventCurrent.time || ""
     };
+    if (eventCurrent.sessionId) out.sessionId = eventCurrent.sessionId;
+    if (eventCurrent.workspace) out.workspace = eventCurrent.workspace;
+    if (eventCurrent.project) out.project = eventCurrent.project;
+    if (eventCurrent.tool) out.tool = eventCurrent.tool;
+    if (eventCurrent.detail) out.detail = eventCurrent.detail;
+    return out;
   }
 
   return null;
