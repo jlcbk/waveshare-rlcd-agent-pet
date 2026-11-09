@@ -13,6 +13,23 @@ export const HOOK_EVENTS = new Set([
 export const TOOL_STATUSES = new Set(["tool-use", "searching"]);
 export const TERMINAL_STATUSES = new Set(["completed", "failed", "error"]);
 
+const TERMINAL_SHELL_TOOLS = new Set([
+  "run_command",
+  "send_command_input",
+  "manage_task",
+  "command_status",
+  "bash",
+  "exec_command",
+  "write_stdin",
+  "shell"
+]);
+
+export function isTerminalShellTool(name) {
+  const lower = str(name).toLowerCase();
+  if (!lower) return false;
+  return TERMINAL_SHELL_TOOLS.has(lower);
+}
+
 export function str(value) {
   if (typeof value === "string") return value.trim();
   if (typeof value === "number" || typeof value === "boolean") return String(value);
@@ -240,9 +257,14 @@ export function inferAntigravityRealtimeFromTranscriptLines(lines = []) {
 
     if (type === "GENERIC") {
       if (status === "RUNNING") {
-        const toolStatus =
-          lastTool === "ask_question" ? "needs-attention" : toolStatusForName(lastTool);
-        state = { status: toolStatus, tool: lastTool, detail: lastDetail, time, stepIndex };
+        const bgYielded = str(item.content).includes("Tool is running as a background task");
+        if (bgYielded) {
+          state = { status: "thinking", tool: lastTool, detail: lastDetail, time, stepIndex };
+        } else {
+          const toolStatus =
+            lastTool === "ask_question" ? "needs-attention" : toolStatusForName(lastTool);
+          state = { status: toolStatus, tool: lastTool, detail: lastDetail, time, stepIndex };
+        }
       } else if (status === "DONE" || status === "ERROR") {
         completedToolCalls += 1;
         if (pendingToolCalls > 0 && completedToolCalls < pendingToolCalls) {

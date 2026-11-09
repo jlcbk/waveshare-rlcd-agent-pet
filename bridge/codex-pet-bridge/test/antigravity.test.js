@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 
 import {
   antigravityTokensToday,
+  candidateActivityTier,
   decodeGenerationMeta,
   decodeStepMeta,
   decodeWorkspaceMeta,
@@ -343,6 +344,11 @@ test("Antigravity DB decoding, realtime state and bridge-server integration", as
     assert.equal(rt.detail, "Build PM firmware");
     assert.equal(rt.workspace, "/Users/cui/Documents/Projects/RLCD_firm1");
     assert.deepEqual(rt.context, { used: 64200, window: 256000, current: 64200, max: 256000 });
+    assert.equal(candidateActivityTier({ status: "needs-attention" }), 0);
+    assert.equal(candidateActivityTier({ status: "thinking" }), 1);
+    assert.equal(candidateActivityTier({ status: "tool-use", tool: "read_file" }), 1);
+    assert.equal(candidateActivityTier({ status: "tool-use", tool: "run_command" }), 2);
+    assert.equal(candidateActivityTier({ status: "completed" }), 3);
 
     const todayTok = await antigravityTokensToday({ geminiDir, now: nowMs });
     assert.equal(todayTok, 2500 + 60000 + 300 + 400);

@@ -131,6 +131,31 @@ const ACTIVE_STATUSES = new Set([
   "near-complete"
 ]);
 
+const SHELL_TOOLS = new Set([
+  "run_command",
+  "send_command_input",
+  "manage_task",
+  "command_status",
+  "bash",
+  "exec_command",
+  "write_stdin",
+  "shell"
+]);
+
+function isShellTool(tool) {
+  return SHELL_TOOLS.has(String(tool || "").trim().toLowerCase());
+}
+
+function activityTier(item) {
+  const status = item?.status;
+  if (status === "needs-attention") return 0;
+  if (ACTIVE_STATUSES.has(status)) {
+    if (status === "tool-use" && isShellTool(item?.tool)) return 2;
+    return 1;
+  }
+  return 3;
+}
+
 function timeValue(item) {
   const value = Date.parse(item?.time || 0);
   return Number.isFinite(value) ? value : 0;
@@ -139,7 +164,14 @@ function timeValue(item) {
 function newest(items) {
   let best = null;
   for (const item of items) {
-    if (!best || timeValue(item) > timeValue(best)) best = item;
+    if (!best) {
+      best = item;
+      continue;
+    }
+    const tierDiff = activityTier(item) - activityTier(best);
+    if (tierDiff < 0 || (tierDiff === 0 && timeValue(item) > timeValue(best))) {
+      best = item;
+    }
   }
   return best;
 }
@@ -149,16 +181,22 @@ function newest(items) {
  * realtime views (Codex rollout, Claude Code transcript, ...).
  *
  * The realtime view of the event's own agent family refines it exactly like
- * pickCurrentState. When the result is no longer active, a newer active agent
- * from another family takes over, so a finished Codex turn does not hide a
- * Claude Code session that is working right now.
+ * pickCurrentState. When the result is no longer active (or is a lower-tier
+ * terminal shell task while another agent is actively consuming an LLM),
+ * the higher-priority active agent takes over.
  */
 export function pickAutoCurrent(eventCurrent, realtimes = []) {
   const list = (Array.isArray(realtimes) ? realtimes : [realtimes]).filter(Boolean);
   const eventFamily = sourceFamily(eventCurrent?.source);
   const sameFamily = newest(list.filter((item) => !eventFamily || sourceFamily(item.source) === eventFamily));
   const refined = pickCurrentState(eventCurrent, sameFamily);
-  if (refined && ACTIVE_STATUSES.has(refined.status)) return refined;
+  const refinedTier = activityTier(refined);
+  if (refined && ACTIVE_STATUSES.has(refined.status)) {
+    const higherPriorityTakeover = newest(
+      list.filter((item) => item !== refined && ACTIVE_STATUSES.has(item.status) && activityTier(item) < refinedTier)
+    );
+    return higherPriorityTakeover || refined;
+  }
   const refinedTime = timeValue(refined);
   const takeover = newest(
     list.filter((item) => item !== refined && ACTIVE_STATUSES.has(item.status) && timeValue(item) > refinedTime)

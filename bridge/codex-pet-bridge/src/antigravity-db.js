@@ -15,6 +15,7 @@ import {
   TOOL_STATUSES,
   effectiveStatus,
   inferAntigravityRealtimeFromTranscriptLines,
+  isTerminalShellTool,
   parseQuotaDocument,
   quotaSummary,
   str
@@ -722,6 +723,16 @@ async function evaluateConversationCandidate(conv, now, windows) {
   };
 }
 
+export function candidateActivityTier(candidate) {
+  if (!candidate?.status) return 4;
+  if (candidate.status === "needs-attention") return 0; // Tier 1: waiting for human confirmation/input
+  if (TERMINAL_STATUSES.has(candidate.status)) return 3; // Tier 4: completed / failed / error
+  if (candidate.status === "tool-use" && isTerminalShellTool(candidate.tool)) {
+    return 2; // Tier 3: terminal shell command executing without consuming LLM
+  }
+  return 1; // Tier 2: actively consuming LLM (thinking, working, searching, file read/edit)
+}
+
 export async function loadAntigravityRealtimeState({
   geminiDir = DEFAULT_ANTIGRAVITY_GEMINI_DIR,
   roots,
@@ -747,11 +758,11 @@ export async function loadAntigravityRealtimeState({
       bestTranscriptMatch = match;
       continue;
     }
-    const currActive = !TERMINAL_STATUSES.has(match.candidate.status);
-    const bestActive = !TERMINAL_STATUSES.has(bestTranscriptMatch.candidate.status);
-    if (currActive && !bestActive) {
+    const currTier = candidateActivityTier(match.candidate);
+    const bestTier = candidateActivityTier(bestTranscriptMatch.candidate);
+    if (currTier < bestTier) {
       bestTranscriptMatch = match;
-    } else if (currActive === bestActive && match.candidate.timeMs > bestTranscriptMatch.candidate.timeMs) {
+    } else if (currTier === bestTier && match.candidate.timeMs > bestTranscriptMatch.candidate.timeMs) {
       bestTranscriptMatch = match;
     }
   }

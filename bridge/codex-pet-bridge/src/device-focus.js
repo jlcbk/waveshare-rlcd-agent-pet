@@ -51,17 +51,36 @@ function hasStrongIdentity(item) {
   return Boolean(item?.sessionId || item?.workspace);
 }
 
-function priorityForStatus(status) {
+const SHELL_TOOLS = new Set([
+  "run_command",
+  "send_command_input",
+  "manage_task",
+  "command_status",
+  "bash",
+  "exec_command",
+  "write_stdin",
+  "shell"
+]);
+
+function isShellTool(tool) {
+  return SHELL_TOOLS.has(String(tool || "").trim().toLowerCase());
+}
+
+function priorityForSlot(slot) {
+  const status = slot?.status;
   if (status === "needs-attention") return 0;
-  if (ACTIVE_STATUSES.has(status)) return 1;
-  if (status === "completed") return 2;
-  if (status === "error" || status === "failed") return 3;
-  return 4;
+  if (ACTIVE_STATUSES.has(status)) {
+    if (status === "tool-use" && isShellTool(slot?.tool)) return 2;
+    return 1;
+  }
+  if (status === "completed") return 3;
+  if (status === "error" || status === "failed") return 4;
+  return 5;
 }
 
 export function sortVisibleAgentSlots(slots) {
   return [...slots].sort((left, right) => {
-    const priority = priorityForStatus(left.status) - priorityForStatus(right.status);
+    const priority = priorityForSlot(left) - priorityForSlot(right);
     if (priority !== 0) return priority;
     return Date.parse(right.updated_at || 0) - Date.parse(left.updated_at || 0);
   });
