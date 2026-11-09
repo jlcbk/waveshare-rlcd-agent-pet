@@ -208,7 +208,8 @@ test("Antigravity transcript JSONL inference tracks thinking, tools and completi
       status: "DONE",
       created_at: "2026-10-29T02:00:10Z",
       tool_calls: null
-    }
+    },
+    { type: "SYSTEM_MESSAGE", status: "DONE", created_at: "2026-10-29T02:00:12Z" }
   ];
   const statuses = steps.map((_, idx) =>
     inferAntigravityRealtimeFromTranscriptLines(steps.slice(0, idx + 1).map((s) => JSON.stringify(s)))?.status
@@ -220,7 +221,8 @@ test("Antigravity transcript JSONL inference tracks thinking, tools and completi
     "tool-use",
     "tool-use",
     "thinking",
-    "completed"
+    "completed",
+    "thinking"
   ]);
 });
 
@@ -307,6 +309,32 @@ test("Antigravity DB decoding, realtime state and bridge-server integration", as
     const conv = await readConversation(dbPath);
     assert.equal(conv.workspace, "/Users/cui/Documents/Projects/RLCD_firm1");
     assert.equal(conv.generations.totals.input, 99_000 + 2500);
+
+    // Add a second idle conversation whose .db was touched more recently (e.g. background WAL flush)
+    const idleLogDir = join(geminiDir, "antigravity", "brain", "conv-ag-idle", ".system_generated", "logs");
+    await mkdir(idleLogDir, { recursive: true });
+    const idleDbPath = join(convDir, "conv-ag-idle.db");
+    await execFileAsync("sqlite3", [
+      idleDbPath,
+      `
+        CREATE TABLE steps (idx integer primary key, step_type integer, status integer, metadata blob);
+        CREATE TABLE gen_metadata (idx integer primary key, data blob, size integer);
+        CREATE TABLE trajectory_metadata_blob (id text primary key, data blob);
+        INSERT INTO steps VALUES (0, 15, 3, NULL);
+      `
+    ]);
+    const idleTrPath = join(idleLogDir, "transcript.jsonl");
+    await writeFile(
+      idleTrPath,
+      JSON.stringify({
+        type: "PLANNER_RESPONSE",
+        status: "DONE",
+        created_at: new Date(nowMs - 7_200_000).toISOString(),
+        tool_calls: null
+      }) + "\n"
+    );
+    await utimes(idleTrPath, new Date(nowMs - 7_200_000), new Date(nowMs - 7_200_000));
+    await utimes(idleDbPath, new Date(nowMs - 500), new Date(nowMs - 500));
 
     const rt = await loadAntigravityRealtimeState({ geminiDir, sourcePrefix: "mac", now: nowMs });
     assert.equal(rt.source, "mac-antigravity");

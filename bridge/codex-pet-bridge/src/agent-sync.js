@@ -172,7 +172,7 @@ async function antigravityActive() {
   if (!existsSync(ANTIGRAVITY_GEMINI_DIR)) return false;
   const state = await loadAntigravityRealtimeState({
     geminiDir: ANTIGRAVITY_GEMINI_DIR,
-    activeWindowMs: ACTIVE_WINDOW_MS,
+    activeWindowMs: Math.max(ACTIVE_WINDOW_MS, 180_000),
     sourcePrefix: SOURCE_PREFIX
   }).catch(() => null);
   return Boolean(

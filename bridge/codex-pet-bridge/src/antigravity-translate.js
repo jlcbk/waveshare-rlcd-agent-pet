@@ -197,13 +197,14 @@ export function inferAntigravityRealtimeFromTranscriptLines(lines = []) {
     const type = str(item.type);
     const status = str(item.status).toUpperCase();
     const time = str(item.created_at) || state?.time || "";
+    const stepIndex = num(item.step_index) ?? state?.stepIndex ?? -1;
 
-    if (type === "USER_INPUT") {
+    if (type === "USER_INPUT" || type === "SYSTEM_MESSAGE") {
       pendingToolCalls = 0;
       completedToolCalls = 0;
       lastTool = "";
       lastDetail = "";
-      state = { status: "thinking", tool: "", detail: "", time };
+      state = { status: "thinking", tool: "", detail: "", time, stepIndex };
       continue;
     }
 
@@ -213,7 +214,7 @@ export function inferAntigravityRealtimeFromTranscriptLines(lines = []) {
         pendingToolCalls = 0;
         completedToolCalls = 0;
         lastDetail = "";
-        state = { status: "failed", tool: "", detail: "", time };
+        state = { status: "failed", tool: "", detail: "", time, stepIndex };
       } else if (toolCalls.length > 0) {
         pendingToolCalls = toolCalls.length;
         completedToolCalls = 0;
@@ -222,17 +223,17 @@ export function inferAntigravityRealtimeFromTranscriptLines(lines = []) {
         lastDetail = summarizeAntigravityToolCall(lastCall);
         const toolStatus =
           lastTool === "ask_question" ? "needs-attention" : toolStatusForName(lastTool);
-        state = { status: toolStatus, tool: lastTool, detail: lastDetail, time };
+        state = { status: toolStatus, tool: lastTool, detail: lastDetail, time, stepIndex };
       } else if (status === "RUNNING") {
         pendingToolCalls = 0;
         completedToolCalls = 0;
-        state = { status: "thinking", tool: "", detail: lastDetail, time };
+        state = { status: "thinking", tool: "", detail: lastDetail, time, stepIndex };
       } else {
         pendingToolCalls = 0;
         completedToolCalls = 0;
         lastTool = "";
         lastDetail = "";
-        state = { status: "completed", tool: "", detail: "", time };
+        state = { status: "completed", tool: "", detail: "", time, stepIndex };
       }
       continue;
     }
@@ -241,15 +242,15 @@ export function inferAntigravityRealtimeFromTranscriptLines(lines = []) {
       if (status === "RUNNING") {
         const toolStatus =
           lastTool === "ask_question" ? "needs-attention" : toolStatusForName(lastTool);
-        state = { status: toolStatus, tool: lastTool, detail: lastDetail, time };
+        state = { status: toolStatus, tool: lastTool, detail: lastDetail, time, stepIndex };
       } else if (status === "DONE" || status === "ERROR") {
         completedToolCalls += 1;
         if (pendingToolCalls > 0 && completedToolCalls < pendingToolCalls) {
           const toolStatus =
             lastTool === "ask_question" ? "needs-attention" : toolStatusForName(lastTool);
-          state = { status: toolStatus, tool: lastTool, detail: lastDetail, time };
+          state = { status: toolStatus, tool: lastTool, detail: lastDetail, time, stepIndex };
         } else {
-          state = { status: "thinking", tool: lastTool, detail: lastDetail, time };
+          state = { status: "thinking", tool: lastTool, detail: lastDetail, time, stepIndex };
         }
       }
     }

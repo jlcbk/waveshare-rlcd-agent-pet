@@ -685,7 +685,7 @@ function enrichWithRealtime(item, realtimes, slots = []) {
     detail: item.detail || rt?.detail || slot?.detail || ""
   };
   if (
-    enriched.status === "running" &&
+    (enriched.status === "running" || enriched.status === "completed") &&
     isGenericSessionTask(enriched.task) &&
     rt?.status &&
     FINE_ACTIVE_STATUSES.has(rt.status)

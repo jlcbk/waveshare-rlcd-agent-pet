@@ -127,6 +127,7 @@ export function listConversations(roots = defaultRoots()) {
       if (!st.isFile()) continue;
       const conversationId = name.slice(0, -3);
       let mtimeMs = st.mtimeMs;
+      let transcriptMtimeMs = 0;
       try {
         const walSt = statSync(`${dbPath}-wal`);
         if (walSt.isFile() && walSt.mtimeMs > mtimeMs) {
@@ -137,8 +138,11 @@ export function listConversations(roots = defaultRoots()) {
       }
       try {
         const trSt = statSync(transcriptPathFor(root, conversationId));
-        if (trSt.isFile() && trSt.mtimeMs > mtimeMs) {
-          mtimeMs = trSt.mtimeMs;
+        if (trSt.isFile()) {
+          transcriptMtimeMs = trSt.mtimeMs;
+          if (trSt.mtimeMs > mtimeMs) {
+            mtimeMs = trSt.mtimeMs;
+          }
         }
       } catch {
         // no transcript file
@@ -149,6 +153,7 @@ export function listConversations(roots = defaultRoots()) {
         dbPath,
         conversationId,
         mtimeMs,
+        transcriptMtimeMs,
         sizeBytes: st.size
       });
     }
@@ -635,16 +640,86 @@ function ageOutRealtimeStatus(status, ageMs, windows = {}) {
 function inferStepFallbackStatus(lastStep, mtimeMs) {
   if (!lastStep) return null;
   const time = new Date(mtimeMs).toISOString();
-  if (lastStep.stepType === 14) return { status: "thinking", tool: "", time };
+  if (lastStep.stepType === 14 || lastStep.stepType === 101) {
+    return { status: "thinking", tool: "", detail: "", time };
+  }
   if (lastStep.stepType === 132) {
-    return { status: lastStep.status === 1 ? "tool-use" : "thinking", tool: "", time };
+    const running = lastStep.status === 1 || lastStep.status === 2;
+    return { status: running ? "tool-use" : "thinking", tool: "", detail: "", time };
   }
   if (lastStep.stepType === 15) {
-    if (lastStep.status === 1) return { status: "thinking", tool: "", time };
-    if (lastStep.status === 3) return { status: "failed", tool: "", time };
-    return { status: "completed", tool: "", time };
+    if (lastStep.status === 1 || lastStep.status === 2) {
+      return { status: "thinking", tool: "", detail: "", time };
+    }
+    if (lastStep.status === 7) return { status: "failed", tool: "", detail: "", time };
+    return { status: "completed", tool: "", detail: "", time };
   }
   return null;
+}
+
+async function evaluateConversationCandidate(conv, now, windows) {
+  const detail = await readConversation(conv.dbPath);
+  const trPath = transcriptPathFor(conv.root, conv.conversationId);
+  const lines = await readTailLines(trPath);
+  const lastStep = detail?.steps?.last || null;
+  const sqliteStepRunning = Boolean(lastStep && (lastStep.status === 1 || lastStep.status === 2));
+
+  let parsed = lines.length
+    ? inferAntigravityRealtimeFromTranscriptLines(lines)
+    : inferStepFallbackStatus(lastStep, conv.mtimeMs);
+
+  // If SQLite has an actively running step (status 1 or 2) or a newer step index than
+  // the last flushed line in transcript.jsonl, upgrade completed/empty state immediately.
+  if (
+    lastStep &&
+    (sqliteStepRunning ||
+      (typeof parsed?.stepIndex === "number" && parsed.stepIndex >= 0 && lastStep.idx > parsed.stepIndex))
+  ) {
+    const stepFallback = inferStepFallbackStatus(lastStep, conv.mtimeMs);
+    if (stepFallback && (!parsed || TERMINAL_STATUSES.has(parsed.status))) {
+      parsed = {
+        ...stepFallback,
+        tool: parsed?.tool || stepFallback.tool || "",
+        detail: parsed?.detail || stepFallback.detail || ""
+      };
+    }
+  }
+
+  if (!parsed?.status) return null;
+
+  const parsedMs = Date.parse(parsed.time || "");
+  const hasParsedMs = Number.isFinite(parsedMs) && parsedMs > 0;
+  const isTerminal = TERMINAL_STATUSES.has(parsed.status);
+
+  let effectiveTimeMs;
+  if (isTerminal) {
+    effectiveTimeMs = hasParsedMs ? parsedMs : conv.transcriptMtimeMs || conv.mtimeMs;
+  } else {
+    effectiveTimeMs = Math.max(
+      hasParsedMs ? parsedMs : 0,
+      conv.transcriptMtimeMs || 0,
+      sqliteStepRunning || !lines.length ? conv.mtimeMs : 0
+    );
+    if (effectiveTimeMs <= 0) effectiveTimeMs = conv.mtimeMs;
+  }
+
+  const status = ageOutRealtimeStatus(parsed.status, now - effectiveTimeMs, windows);
+  if (!status) return null;
+
+  return {
+    conv,
+    detail,
+    candidate: {
+      status,
+      tool: parsed.tool || "",
+      detail: parsed.detail || parsed.tool || "",
+      time: new Date(effectiveTimeMs).toISOString(),
+      timeMs: effectiveTimeMs,
+      sessionId: conv.conversationId,
+      workspace: detail?.workspace || "",
+      model: ""
+    }
+  };
 }
 
 export async function loadAntigravityRealtimeState({
@@ -661,11 +736,31 @@ export async function loadAntigravityRealtimeState({
   const windows = { activeWindowMs, toolWindowMs, completedHoldMs };
   const rs = roots ?? defaultRoots(geminiDir);
   const conversations = listConversations(rs);
-  const active = conversations[0] ?? null;
   const maxWindow = Math.max(activeWindowMs, toolWindowMs, completedHoldMs);
-  const activeFresh = active && now - active.mtimeMs <= maxWindow;
-  const activeDetail = active && (activeFresh || hookEvent) ? await readConversation(active.dbPath) : null;
+  const freshConversations = conversations.filter((item) => now - item.mtimeMs <= maxWindow).slice(0, 6);
+
+  let bestTranscriptMatch = null;
+  for (const conv of freshConversations) {
+    const match = await evaluateConversationCandidate(conv, now, windows);
+    if (!match) continue;
+    if (!bestTranscriptMatch) {
+      bestTranscriptMatch = match;
+      continue;
+    }
+    const currActive = !TERMINAL_STATUSES.has(match.candidate.status);
+    const bestActive = !TERMINAL_STATUSES.has(bestTranscriptMatch.candidate.status);
+    if (currActive && !bestActive) {
+      bestTranscriptMatch = match;
+    } else if (currActive === bestActive && match.candidate.timeMs > bestTranscriptMatch.candidate.timeMs) {
+      bestTranscriptMatch = match;
+    }
+  }
+
+  const active = bestTranscriptMatch?.conv ?? conversations[0] ?? null;
+  const activeDetail =
+    bestTranscriptMatch?.detail ?? (active && hookEvent ? await readConversation(active.dbPath) : null);
   const generation = activeDetail?.generations?.last ?? null;
+  const transcriptCandidate = bestTranscriptMatch?.candidate ?? null;
 
   let hookCandidate = null;
   if (hookEvent && hookAt > 0) {
@@ -681,32 +776,6 @@ export async function loadAntigravityRealtimeState({
         workspace: hookEvent.workspace || activeDetail?.workspace || "",
         model: hookEvent.model && hookEvent.model !== "auto" ? hookEvent.model : ""
       };
-    }
-  }
-
-  let transcriptCandidate = null;
-  if (active && activeFresh) {
-    const trPath = transcriptPathFor(active.root, active.conversationId);
-    const lines = await readTailLines(trPath);
-    const parsed = lines.length
-      ? inferAntigravityRealtimeFromTranscriptLines(lines)
-      : inferStepFallbackStatus(activeDetail?.steps?.last, active.mtimeMs);
-    if (parsed?.status) {
-      const parsedMs = Date.parse(parsed.time || "");
-      const effectiveTimeMs = Number.isFinite(parsedMs) && parsedMs > 0 ? parsedMs : active.mtimeMs;
-      const status = ageOutRealtimeStatus(parsed.status, now - effectiveTimeMs, windows);
-      if (status) {
-        transcriptCandidate = {
-          status,
-          tool: parsed.tool || "",
-          detail: parsed.detail || parsed.tool || "",
-          time: new Date(effectiveTimeMs).toISOString(),
-          timeMs: effectiveTimeMs,
-          sessionId: active.conversationId,
-          workspace: activeDetail?.workspace || "",
-          model: ""
-        };
-      }
     }
   }
 
