@@ -229,7 +229,7 @@ PetMode runningPetMode(const std::string& detail) {
 
 std::string tickerText(const std::string& statusDetail, const std::string& task, const std::string& updatedAt) {
   if (!task.empty()) {
-    return statusDetail + "  " + task;
+    return task;
   }
   if (!updatedAt.empty()) {
     return updatedAt;

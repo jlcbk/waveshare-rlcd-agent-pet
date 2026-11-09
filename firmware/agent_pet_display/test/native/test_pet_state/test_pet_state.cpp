@@ -26,7 +26,7 @@ void test_thinking_agent_gets_dedicated_pet_mode(void) {
   TEST_ASSERT_EQUAL_STRING("23.5C 58%", view.sidebarClimate.c_str());
   TEST_ASSERT_EQUAL_STRING("CODEX THNK", view.sidebarAgent.c_str());
   TEST_ASSERT_EQUAL_STRING("thinking...", view.buddyBubble.c_str());
-  TEST_ASSERT_EQUAL_STRING("THINKING  Sync bridge", view.footerMessage.c_str());
+  TEST_ASSERT_EQUAL_STRING("Sync bridge", view.footerMessage.c_str());
 }
 
 void test_running_details_drive_distinct_pet_modes(void) {
