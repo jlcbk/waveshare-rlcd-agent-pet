@@ -50,8 +50,17 @@ DeviceTelemetry gTelemetry;
 bool gFastPoll = false;
 bool gRunning = false;
 bool gReconnectBackoffReset = false;
-uint32_t gLastAgentChangeMs = 0;  // millis() of the last agent change (0 = no baseline yet)
+int64_t gLastAgentChangeMs = -1;  // pmMonotonicMs() of the last agent change (-1 = no baseline yet)
+bool gEverPolledOk = false;
 uint32_t gFailStreak = 0;         // consecutive failed polls (fast retry, then backoff)
+
+uint32_t clampedElapsedSince(uint64_t nowMs, int64_t sinceMs) {
+  if (sinceMs < 0 || nowMs <= static_cast<uint64_t>(sinceMs)) {
+    return 0;
+  }
+  const uint64_t diff = nowMs - static_cast<uint64_t>(sinceMs);
+  return diff > 0xFFFFFFFFULL ? 0xFFFFFFFFU : static_cast<uint32_t>(diff);
+}
 
 void wakeNetTask() {
   if (gNetTaskHandle != nullptr) {
@@ -104,18 +113,20 @@ void pollOnce() {
   const uint32_t sentAt = millis();
   const bool ok = fetchPollState(url.c_str(), agent, commands, kPollTimeoutMs);
   const uint32_t doneAt = millis();
+  const uint64_t doneMonoMs = pmMonotonicMs();
   {
     Guard guard;
     gSnapshot.pollSeq += 1;
     gSnapshot.lastPollOk = ok;
     gFailStreak = ok ? 0 : gFailStreak + 1;
     if (ok) {
-      const bool firstSuccess = gSnapshot.lastPollOkAtMs == 0;
+      const bool firstSuccess = !gEverPolledOk;
+      gEverPolledOk = true;
       const AgentState& prev = gSnapshot.agent;
       if (firstSuccess || prev.status != agent.status || prev.statusDetail != agent.statusDetail ||
-          prev.task != agent.task || prev.usageToday != agent.usageToday ||
-          prev.usageContext != agent.usageContext) {
-        gLastAgentChangeMs = doneAt;
+          prev.project != agent.project || prev.task != agent.task ||
+          prev.usageToday != agent.usageToday || prev.usageContext != agent.usageContext) {
+        gLastAgentChangeMs = static_cast<int64_t>(doneMonoMs);
       }
       gSnapshot.agent = agent;
       gSnapshot.commands = commands;
@@ -125,10 +136,11 @@ void pollOnce() {
         gSnapshot.serverOffsetMs = commands.serverTimeMs - static_cast<int64_t>(midpoint);
         gSnapshot.serverOffsetKnown = true;
       }
-    } else if (gFailStreak >= 2 || gSnapshot.lastPollOkAtMs == 0) {
+    } else if (gFailStreak >= 2 || !gEverPolledOk) {
       gSnapshot.agent.connected = false;
     }
   }
+  pmNotifyAppTask();
   if (ok) {
     if (!pmLightSleepArmed()) {
       Serial.printf("[BRIDGE] ok source=%d status=%d focus=%s count=%d rtt=%lums\n",
@@ -344,11 +356,15 @@ bool tryResolveBridgeHost(bool streaming) {
 }
 
 void netTask(void*) {
-  uint32_t lastReconnect = millis();
-  uint32_t lastReport = 0;
-  uint32_t lastPoll = 0;
-  uint32_t lastMdnsLookup = 0;
-  uint32_t lastRssiSample = 0;
+  uint64_t lastReconnect = pmMonotonicMs();
+  uint64_t lastReport = 0;
+  bool hasReported = false;
+  uint64_t lastPoll = 0;
+  bool hasPolled = false;
+  uint64_t lastMdnsLookup = 0;
+  bool hasMdnsLookup = false;
+  uint64_t lastRssiSample = 0;
+  bool hasRssiSample = false;
   uint32_t reconnectAttempts = 0;
   uint32_t cachedIpRaw = 0;
   std::string cachedIp;
@@ -358,7 +374,7 @@ void netTask(void*) {
   wl_status_t lastStatus = WL_IDLE_STATUS;
 
   for (;;) {
-    const uint32_t now = millis();
+    const uint64_t now = pmMonotonicMs();
     const wl_status_t status = WiFi.status();
     const bool connected = status == WL_CONNECTED;
 
@@ -372,7 +388,7 @@ void netTask(void*) {
     }
     if (resetBackoff && !connected) {
       reconnectAttempts = 0;
-      lastReconnect = now - kWifiReconnectMs;
+      lastReconnect = now >= kWifiReconnectMs ? (now - kWifiReconnectMs) : 0;
     }
 
     if (status != lastStatus) {
@@ -382,8 +398,9 @@ void netTask(void*) {
         cachedIp = ip.toString().c_str();
         cachedRssi = WiFi.RSSI();
         lastRssiSample = now;
+        hasRssiSample = true;
         Serial.printf("[WIFI] connected ip=%s rssi=%d dBm\n", cachedIp.c_str(), cachedRssi);
-        lastPoll = 0;  // poll immediately on (re)connect; only real agent changes reset sleep pacing
+        hasPolled = false;  // poll immediately on (re)connect; only real agent changes reset sleep pacing
         reconnectAttempts = 0;
       } else {
         cachedIpRaw = 0;
@@ -392,6 +409,7 @@ void netTask(void*) {
         Serial.printf("[WIFI] status=%d\n", static_cast<int>(status));
       }
       lastStatus = status;
+      pmNotifyAppTask();
     }
 
     const uint32_t reconnectInterval = wifiReconnectIntervalMs(reconnectAttempts);
@@ -417,12 +435,13 @@ void netTask(void*) {
         cachedIpRaw = ipRaw;
         cachedIp = ip.toString().c_str();
       }
-      if (lastRssiSample == 0 || now - lastRssiSample >= 5000) {
+      if (!hasRssiSample || now - lastRssiSample >= 5000) {
         cachedRssi = WiFi.RSSI();
         lastRssiSample = now;
+        hasRssiSample = true;
       }
     }
-    if (now - lastReport >= kWifiReportMs) {
+    if (!hasReported || now - lastReport >= kWifiReportMs) {
       if (connected) {
         if (!pmLightSleepArmed()) {
           Serial.printf("[WIFI] ok ip=%s rssi=%d dBm\n", cachedIp.c_str(), cachedRssi);
@@ -433,6 +452,7 @@ void netTask(void*) {
                       static_cast<unsigned long>(wifiReconnectIntervalMs(reconnectAttempts)));
       }
       lastReport = now;
+      hasReported = true;
     }
 
     NetworkState network{};
@@ -450,7 +470,7 @@ void netTask(void*) {
     bool streaming = false;
     bool fastPoll = false;
     bool busy = false;
-    uint32_t lastAgentChange = 0;
+    int64_t lastAgentChange = -1;
     uint32_t failStreak = 0;
     {
       Guard guard;
@@ -464,8 +484,12 @@ void netTask(void*) {
              gSnapshot.agent.status == AgentStatus::NeedsAttention;
       lastAgentChange = gLastAgentChangeMs;
       failStreak = gFailStreak;
-      gSnapshot.pacingMode =
-          deriveSleepPacingMode(fastPoll, busy, lastAgentChange != 0, now - lastAgentChange);
+      const SleepPacingMode nextPacing =
+          deriveSleepPacingMode(fastPoll, busy, lastAgentChange >= 0, clampedElapsedSince(now, lastAgentChange));
+      if (nextPacing != gSnapshot.pacingMode) {
+        gSnapshot.pacingMode = nextPacing;
+        pmNotifyAppTask();
+      }
     }
 
     // Streaming needs low latency; restore maximum modem sleep afterwards.
@@ -474,11 +498,12 @@ void netTask(void*) {
       sleepDisabled = streaming;
     }
 
-    uint32_t interval = pollIntervalMs(fastPoll, busy, lastAgentChange != 0,
-                                       now - lastAgentChange, failStreak);
-    if (connected && (lastPoll == 0 || millis() - lastPoll >= interval)) {
+    uint32_t interval = pollIntervalMs(fastPoll, busy, lastAgentChange >= 0,
+                                       clampedElapsedSince(now, lastAgentChange), failStreak);
+    if (connected && (!hasPolled || pmMonotonicMs() - lastPoll >= interval)) {
       pollOnce();
-      lastPoll = millis();
+      lastPoll = pmMonotonicMs();
+      hasPolled = true;
       // Re-evaluate interval after pollOnce() so a newly-busy or failed state
       // schedules the next wake accurately.
       {
@@ -490,14 +515,15 @@ void netTask(void*) {
         lastAgentChange = gLastAgentChangeMs;
         failStreak = gFailStreak;
         gSnapshot.pacingMode =
-            deriveSleepPacingMode(fastPoll, busy, lastAgentChange != 0, lastPoll - lastAgentChange);
+            deriveSleepPacingMode(fastPoll, busy, lastAgentChange >= 0, clampedElapsedSince(lastPoll, lastAgentChange));
       }
-      interval = pollIntervalMs(fastPoll, busy, lastAgentChange != 0,
-                                lastPoll - lastAgentChange, failStreak);
-      if (failStreak >= 2 && (lastMdnsLookup == 0 || lastPoll - lastMdnsLookup >= kMdnsLookupCooldownMs)) {
+      interval = pollIntervalMs(fastPoll, busy, lastAgentChange >= 0,
+                                clampedElapsedSince(lastPoll, lastAgentChange), failStreak);
+      if (failStreak >= 2 && (!hasMdnsLookup || lastPoll - lastMdnsLookup >= kMdnsLookupCooldownMs)) {
         lastMdnsLookup = lastPoll;
+        hasMdnsLookup = true;
         if (tryResolveBridgeHost(streaming)) {
-          lastPoll = 0;
+          hasPolled = false;
           interval = 0;
         }
       }
@@ -513,16 +539,17 @@ void netTask(void*) {
     // Event-driven sleep: block until the next scheduled poll / reconnect
     // deadline or an explicit xTaskNotifyGive() from a button/focus/stream
     // change on core 1. Eliminates the 10 Hz idle wakeups on core 0.
-    const uint32_t afterNow = millis();
+    const uint64_t afterNow = pmMonotonicMs();
     uint32_t sleepMs = 1000;
     if (connected) {
-      const uint32_t elapsed = afterNow - lastPoll;
-      const uint32_t remaining = elapsed >= interval ? 0 : (interval - elapsed);
+      const uint64_t elapsed = hasPolled && afterNow >= lastPoll ? (afterNow - lastPoll) : interval;
+      const uint32_t remaining = elapsed >= interval ? 0 : static_cast<uint32_t>(interval - elapsed);
       sleepMs = remaining < 50 ? 50 : (remaining > kDeepIdlePollMs ? kDeepIdlePollMs : remaining);
     } else {
       const uint32_t targetRecon = wifiReconnectIntervalMs(reconnectAttempts);
-      const uint32_t elapsedRecon = afterNow - lastReconnect;
-      const uint32_t remainingRecon = elapsedRecon >= targetRecon ? 0 : (targetRecon - elapsedRecon);
+      const uint64_t elapsedRecon = afterNow >= lastReconnect ? (afterNow - lastReconnect) : 0;
+      const uint32_t remainingRecon =
+          elapsedRecon >= targetRecon ? 0 : static_cast<uint32_t>(targetRecon - elapsedRecon);
       // Poll Wi-Fi association status every 250 ms during the first 4 s after
       // kicking off a connect; then relax to up to 2 s steps until the next
       // reconnect attempt is due.
@@ -593,7 +620,7 @@ void netWorkerSetFocus(const FocusRequestState& focus) {
               gFocus.visibleIndex != focus.visibleIndex;
     gFocus = focus;
     if (changed) {
-      gLastAgentChangeMs = millis();  // poll with the new focus promptly
+      gLastAgentChangeMs = static_cast<int64_t>(pmMonotonicMs());  // poll with the new focus promptly
     }
   }
   if (changed) {
@@ -631,7 +658,7 @@ void netWorkerWake() {
   {
     Guard guard;
     gReconnectBackoffReset = true;
-    gLastAgentChangeMs = millis();
+    gLastAgentChangeMs = static_cast<int64_t>(pmMonotonicMs());
     gSnapshot.pacingMode = SleepPacingMode::Fast;
   }
   wakeNetTask();

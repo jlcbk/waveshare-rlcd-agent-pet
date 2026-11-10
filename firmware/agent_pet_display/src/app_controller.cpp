@@ -34,26 +34,31 @@ ButtonGestureState gBootButton;
 ButtonGestureState gKeyButton;
 ChordGestureState gEggChord;
 
-uint32_t gLastClockSample = 0;
+uint64_t gLastClockSample = 0;
+bool gClockSampled = false;
 uint32_t gClockSampleWaitMs = kClockSampleMs;
-uint32_t gLastClimateSample = 0;
-uint32_t gLastBatterySample = 0;
-uint32_t gLastRender = 0;
-uint32_t gLastTelemetry = 0;
+uint64_t gLastClimateSample = 0;
+bool gClimateSampled = false;
+uint64_t gLastBatterySample = 0;
+bool gBatterySampled = false;
+uint64_t gLastRender = 0;
+uint64_t gLastTelemetry = 0;
+bool gTelemetrySent = false;
 uint32_t gLastPollSeen = 0;
-uint32_t gLastRtcWrite = 0;
+uint64_t gLastRtcWrite = 0;
 bool gRtcWrittenThisBoot = false;
 bool gSettingsDirty = false;
-uint32_t gSettingsChangedAt = 0;
+uint64_t gSettingsChangedAt = 0;
 bool gForceRender = true;
 bool gTelemetryDirty = true;
-uint32_t gPmBootAtMs = 0;
+uint64_t gPmBootAtMs = 0;
 bool gPmArmed = false;
 int gPrevWifiConnected = -1;  // -1 unknown, 0/1 last seen connection state
 SleepPacingMode gPacingMode = SleepPacingMode::Fast;
 
 uint32_t gEggRequest = 0;       // counter sent to the bridge
-uint32_t gEggRequestedAt = 0;   // waiting for the bridge to answer
+uint64_t gEggRequestedAt = 0;   // waiting for the bridge to answer
+bool gEggPending = false;
 uint32_t gLastEggRev = 0;       // last egg command we started
 bool gEggWasActive = false;
 
@@ -65,32 +70,32 @@ bool gShownClimateValid = false;
 float gShownTemperatureC = 0.0f;
 float gShownHumidityPct = 0.0f;
 
-void markSettingsDirty(uint32_t now) {
+void markSettingsDirty(uint64_t now64) {
   gSettingsDirty = true;
-  gSettingsChangedAt = now;
+  gSettingsChangedAt = now64;
   gTelemetryDirty = true;
 }
 
-void saveSettingsIfDue(uint32_t now) {
-  if (gSettingsDirty && now - gSettingsChangedAt >= kSettingsSaveDelayMs) {
+void saveSettingsIfDue(uint64_t now64) {
+  if (gSettingsDirty && now64 - gSettingsChangedAt >= kSettingsSaveDelayMs) {
     saveDeviceSettings(gSettings);
     gSettingsDirty = false;
     Serial.println("[CFG] saved");
   }
 }
 
-void setPage(ScreenPage page, uint32_t now) {
+void setPage(ScreenPage page, uint64_t now64) {
   if (gSettings.page == page) {
     return;
   }
   gSettings.page = page;
-  markSettingsDirty(now);
+  markSettingsDirty(now64);
   gForceRender = true;
   Serial.printf("[UI] page=%s\n", screenPageName(page));
 }
 
-void cycleAgentFocus(uint32_t now) {
-  advanceFocusSelection(gFocusRequest, gAgent, now, kFocusAutoReturnMs);
+void cycleAgentFocus(uint32_t now32) {
+  advanceFocusSelection(gFocusRequest, gAgent, now32, kFocusAutoReturnMs);
   netWorkerSetFocus(gFocusRequest);
   gForceRender = true;
   Serial.printf("[UI] focus=%s index=%d count=%d\n",
@@ -99,15 +104,16 @@ void cycleAgentFocus(uint32_t now) {
                 gFocusRequest.visibleCount);
 }
 
-void requestEgg(uint32_t now) {
+void requestEgg(uint64_t now64) {
   gEggRequest += 1;
-  gEggRequestedAt = now;
+  gEggRequestedAt = now64;
+  gEggPending = true;
   gTelemetryDirty = true;
   netWorkerSetFastPoll(true);
   Serial.printf("[EGG] requested #%lu\n", static_cast<unsigned long>(gEggRequest));
 }
 
-void handleAction(ButtonUiAction action, uint32_t now) {
+void handleAction(ButtonUiAction action, uint64_t now64, uint32_t now32) {
   if (action == ButtonUiAction::None) {
     return;
   }
@@ -132,32 +138,32 @@ void handleAction(ButtonUiAction action, uint32_t now) {
   }
   switch (contextualAction(action, gSettings.page)) {
     case ButtonUiAction::Page:
-      setPage(nextScreenPage(gSettings.page), now);
+      setPage(nextScreenPage(gSettings.page), now64);
       break;
     case ButtonUiAction::AgentFocus:
-      cycleAgentFocus(now);
+      cycleAgentFocus(now32);
       break;
     case ButtonUiAction::ClockStyle:
       gSettings.display.clockStyle = nextClockStyle(gSettings.display.clockStyle);
-      markSettingsDirty(now);
+      markSettingsDirty(now64);
       gForceRender = true;
       Serial.printf("[UI] clock=%s\n", clockStyleName(gSettings.display.clockStyle));
       break;
     case ButtonUiAction::Egg:
-      requestEgg(now);
+      requestEgg(now64);
       break;
     default:
       break;
   }
 }
 
-void readButtons(uint32_t now) {
+void readButtons(uint64_t now64, uint32_t now32) {
   const bool bootPressed = digitalRead(kBootButtonPin) == LOW;
   const bool keyPressed = digitalRead(kAgentFocusButtonPin) == LOW;
 
   const ButtonUiAction bootAction = updateButtonGestureEx(gBootButton,
                                                           bootPressed,
-                                                          now,
+                                                          now32,
                                                           kButtonLongPressMs,
                                                           kButtonVeryLongPressMs,
                                                           ButtonUiAction::Page,
@@ -165,23 +171,23 @@ void readButtons(uint32_t now) {
                                                           ButtonUiAction::Egg);
   const ButtonUiAction keyAction = updateButtonGestureEx(gKeyButton,
                                                          keyPressed,
-                                                         now,
+                                                         now32,
                                                          kButtonLongPressMs,
                                                          0,
                                                          ButtonUiAction::AgentFocus,
                                                          ButtonUiAction::AgentFocus,
                                                          ButtonUiAction::None);
   const bool chordFired =
-      updateChordGesture(gEggChord, gBootButton, gKeyButton, bootPressed, keyPressed, now, kEggChordHoldMs);
+      updateChordGesture(gEggChord, gBootButton, gKeyButton, bootPressed, keyPressed, now32, kEggChordHoldMs);
   if (chordFired) {
-    handleAction(ButtonUiAction::Egg, now);
+    handleAction(ButtonUiAction::Egg, now64, now32);
     return;
   }
   if (gEggChord.active) {
     return;  // both buttons are down: single-button gestures are swallowed
   }
-  handleAction(bootAction, now);
-  handleAction(keyAction, now);
+  handleAction(bootAction, now64, now32);
+  handleAction(keyAction, now64, now32);
 }
 
 // Ten consecutive valid samples strictly below 3.60 V (~50 s at 5 s per
@@ -204,8 +210,8 @@ void enterBatteryProtection() {
   batteryProtectionEnterDeepSleep();  // holds LCD pads, arms the 600 s RTC timer
 }
 
-void sampleSensors(uint32_t now) {
-  if (gLastClockSample == 0 || now - gLastClockSample >= gClockSampleWaitMs) {
+void sampleSensors(uint64_t now64) {
+  if (!gClockSampled || now64 - gLastClockSample >= gClockSampleWaitMs) {
     // Round 3/4: no page shows seconds any more, so redraw on minute changes
     // and on the invalid->valid transition (SYNCING TIME -> real time), and
     // sleep the RTC I2C read until the next minute boundary once valid.
@@ -216,11 +222,12 @@ void sampleSensors(uint32_t now) {
         (gEnvironment.clockValid && gEnvironment.hour * 60 + gEnvironment.minute != prevMinute)) {
       gForceRender = true;
     }
-    gLastClockSample = now;
+    gLastClockSample = now64;
+    gClockSampled = true;
     gClockSampleWaitMs = nextClockSampleDelayMs(gEnvironment.clockValid, gEnvironment.second);
   }
   const uint32_t climateInterval = (gPacingMode == SleepPacingMode::Deep) ? 120000U : kClimateSampleMs;
-  if (gLastClimateSample == 0 || now - gLastClimateSample >= climateInterval) {
+  if (!gClimateSampled || now64 - gLastClimateSample >= climateInterval) {
     sampleClimate(gEnvironment);
     if (climateDisplayChanged(gEnvironment.climateValid,
                               gEnvironment.temperatureC,
@@ -233,11 +240,12 @@ void sampleSensors(uint32_t now) {
       gShownHumidityPct = gEnvironment.humidityPct;
       gForceRender = true;
     }
-    gLastClimateSample = now;
+    gLastClimateSample = now64;
+    gClimateSampled = true;
     gTelemetryDirty = true;
   }
   const uint32_t batteryInterval = (gPacingMode == SleepPacingMode::Deep) ? 30000U : kBatterySampleMs;
-  if (gLastBatterySample == 0 || now - gLastBatterySample >= batteryInterval) {
+  if (!gBatterySampled || now64 - gLastBatterySample >= batteryInterval) {
     const PowerState prevPower = gPower;
     gPower = samplePowerState(false);
     // Display hysteresis: the panel shows the last value that crossed
@@ -250,33 +258,29 @@ void sampleSensors(uint32_t now) {
     if (!(gPower.sampleOk && shownBefore > 0 && deltaMv < kBatteryDisplayDeadbandMv)) {
       gShownVoltageMv = gPower.voltageMv;  // crossing, first value, or invalid (0)
     }
-    // No raw-percent comparison here on purpose: the displayed percent now
-    // derives from gShownVoltageMv, so it changes exactly when this value
-    // does, and raw curve steps inside the deadband redraw nothing.
     if (gPower.lowBattery != prevPower.lowBattery || gPower.charging != prevPower.charging ||
         gShownVoltageMv != shownBefore) {
       gForceRender = true;
     }
-    gLastBatterySample = now;
+    gLastBatterySample = now64;
+    gBatterySampled = true;
     gTelemetryDirty = true;
-    // Protection counts raw valid samples only: invalid ones reset it above
-    // (feed()), so a dead sensor can never be read as an empty battery.
     if (gLowBatGuard.feed(gPower.sampleOk, gPower.voltageMv) == LowBatteryAction::EnterProtection) {
       enterBatteryProtection();  // does not return
     }
   }
   // SNTP sets the system clock asynchronously; mirror it into the RTC now and then.
-  if (systemClockPlausible() && (!gRtcWrittenThisBoot || now - gLastRtcWrite >= kRtcResyncMs)) {
+  if (systemClockPlausible() && (!gRtcWrittenThisBoot || now64 - gLastRtcWrite >= kRtcResyncMs)) {
     if (writeRtcFromSystemClock()) {
       gRtcWrittenThisBoot = true;
-      gLastRtcWrite = now;
-      gLastClockSample = 0;  // re-sample RTC immediately after sync
+      gLastRtcWrite = now64;
+      gClockSampled = false;  // re-sample RTC immediately after sync
       Serial.println("[TIME] RTC synced from NTP (UTC)");
     }
   }
 }
 
-void applyBridge(uint32_t now) {
+void applyBridge(uint64_t now64, uint32_t now32) {
   if (!netWorkerSnapshot(gSnapshot)) {
     return;
   }
@@ -302,37 +306,38 @@ void applyBridge(uint32_t now) {
   if (!gSnapshot.lastPollOk) {
     return;
   }
-  syncFocusSelectionFromBridge(gFocusRequest, gAgent, now, kFocusAutoReturnMs);
+  syncFocusSelectionFromBridge(gFocusRequest, gAgent, now32, kFocusAutoReturnMs);
   netWorkerSetFocus(gFocusRequest);
 
   const BridgeCommands& commands = gSnapshot.commands;
   if (applyDisplayCommand(gSettings, commands.display)) {
-    markSettingsDirty(now);
+    markSettingsDirty(now64);
     Serial.printf("[CFG] from bridge rev=%lu clock=%s page=%s\n",
                   static_cast<unsigned long>(gSettings.displayRev),
                   clockStyleName(gSettings.display.clockStyle),
                   screenPageName(gSettings.page));
   }
   if (commands.hasTz && applyTzCommand(gSettings, commands.tz)) {
-    markSettingsDirty(now);
-    gLastClockSample = 0;  // re-sample local clock immediately on timezone change
+    markSettingsDirty(now64);
+    gClockSampled = false;  // re-sample local clock immediately on timezone change
     Serial.printf("[TIME] tz=%s\n", gSettings.tz.c_str());
   }
   if (commands.egg.present && commands.egg.rev != gLastEggRev) {
     gLastEggRev = commands.egg.rev;
-    gEggRequestedAt = 0;
+    gEggPending = false;
     gTelemetryDirty = true;
     netWorkerSetFastPoll(false);
-    eggStartStream(commands.egg, gSnapshot, now);
+    eggStartStream(commands.egg, gSnapshot, now32);
   }
 }
 
-void updateTelemetry(uint32_t now) {
-  if (!gTelemetryDirty && gLastTelemetry != 0 && now - gLastTelemetry < kBridgePollMs) {
+void updateTelemetry(uint64_t now64) {
+  if (!gTelemetryDirty && gTelemetrySent && now64 - gLastTelemetry < kBridgePollMs) {
     return;
   }
   gTelemetryDirty = false;
-  gLastTelemetry = now;
+  gTelemetrySent = true;
+  gLastTelemetry = now64;
   DeviceTelemetry telemetry{};
   telemetry.firmware = kFirmwareVersion;
   telemetry.batteryValid = gPower.sampleOk;
@@ -343,7 +348,7 @@ void updateTelemetry(uint32_t now) {
   telemetry.temperatureC = gEnvironment.temperatureC;
   telemetry.humidityPct = gEnvironment.humidityPct;
   telemetry.rssi = gNetwork.wifiConnected ? gNetwork.rssi : 0;
-  telemetry.uptimeS = now / 1000;
+  telemetry.uptimeS = static_cast<uint32_t>(now64 / 1000ULL);
   telemetry.page = gSettings.page;
   telemetry.clockStyle = gSettings.display.clockStyle;
   telemetry.settingsRev = gSettings.displayRev;
@@ -354,15 +359,54 @@ void updateTelemetry(uint32_t now) {
   netWorkerSetTelemetry(telemetry);
 }
 
-void checkEggRequestTimeout(uint32_t now) {
+void checkEggRequestTimeout(uint64_t now64, uint32_t now32) {
   // The bridge had ~3 s to announce an animation; otherwise play the built-in one.
-  if (gEggRequestedAt != 0 && now - gEggRequestedAt > 3000) {
-    gEggRequestedAt = 0;
+  if (gEggPending && now64 - gEggRequestedAt > 3000) {
+    gEggPending = false;
     netWorkerSetFastPoll(false);
     if (!eggActive()) {
-      eggStartBuiltin(now);
+      eggStartBuiltin(now32);
     }
   }
+}
+
+uint32_t remainingToDeadline(uint64_t now64, uint64_t baseMs, uint32_t intervalMs) {
+  const uint64_t elapsed = now64 >= baseMs ? (now64 - baseMs) : 0ULL;
+  if (elapsed >= intervalMs) {
+    return 0;
+  }
+  return static_cast<uint32_t>(intervalMs - elapsed);
+}
+
+uint32_t computeIdleSleepMs(uint64_t now64, uint32_t now32) {
+  if (gForceRender || !gClockSampled || !gClimateSampled || !gBatterySampled) {
+    return 20;
+  }
+  uint32_t sleepMs = 30000;
+  auto clampMin = [&sleepMs](uint32_t candidate) {
+    if (candidate < sleepMs) {
+      sleepMs = candidate;
+    }
+  };
+
+  clampMin(remainingToDeadline(now64, gLastClockSample, gClockSampleWaitMs));
+  const uint32_t batteryInterval = (gPacingMode == SleepPacingMode::Deep) ? 30000U : kBatterySampleMs;
+  clampMin(remainingToDeadline(now64, gLastBatterySample, batteryInterval));
+  const uint32_t climateInterval = (gPacingMode == SleepPacingMode::Deep) ? 120000U : kClimateSampleMs;
+  clampMin(remainingToDeadline(now64, gLastClimateSample, climateInterval));
+  clampMin(remainingToDeadline(now64, gLastRender, kRenderIntervalMs));
+
+  if (!gPmArmed) {
+    clampMin(remainingToDeadline(now64, gPmBootAtMs, kPmArmDelayMs));
+  }
+  if (gSettingsDirty) {
+    clampMin(remainingToDeadline(now64, gSettingsChangedAt, kSettingsSaveDelayMs));
+  }
+  if (gFocusRequest.mode == LocalFocusMode::Pinned) {
+    const int32_t focusRem = static_cast<int32_t>(gFocusRequest.expiresAtMs - now32);
+    clampMin(focusRem > 0 ? static_cast<uint32_t>(focusRem) : 0U);
+  }
+  return sleepMs < 20 ? 20 : sleepMs;
 }
 
 }  // namespace
@@ -381,9 +425,10 @@ void AppController::begin() {
   }
   pinMode(kBootButtonPin, INPUT_PULLUP);
   pinMode(kAgentFocusButtonPin, INPUT_PULLUP);
-  // pmBegin() runs once in main.cpp setup(); here we only arm the wake pads.
+  pmRegisterAppTaskWakeup();
+  // pmBegin() runs once in main.cpp setup(); here we only arm the wake pads + idle hook.
   pmSetupButtonWakeup(kBootButtonPin, kAgentFocusButtonPin);
-  gPmBootAtMs = millis();
+  gPmBootAtMs = pmMonotonicMs();
   Serial.printf("[BOOT] firmware=%s\n", kFirmwareVersion);
   Serial.printf("[BOOT] WiFi SSID=%s\n", kWifiSsid);
   Serial.printf("[BOOT] Bridge URL=%s\n", redactUrlToken(kBridgeUrl).c_str());
@@ -396,28 +441,24 @@ void AppController::begin() {
 }
 
 void AppController::tick() {
-  const uint32_t now = millis();
+  const uint64_t now64 = pmMonotonicMs();
+  const uint32_t now32 = millis();
 
-  pmTick(now);
-  // Defer arming while the egg plays: it may cross the 45 s mark at 240 MHz
-  // with light sleep off, and re-arming mid-playback would throttle it. After
-  // the egg ends, pmEggPerformanceOff() restores 80 MHz first, then this gate
-  // arms light sleep on the next tick. gPmArmed mirrors the real outcome so a
-  // failed configure is retried instead of reported as success.
-  if (!gPmArmed && !eggActive() && now - gPmBootAtMs >= kPmArmDelayMs) {
+  pmTick(now32);
+  if (!gPmArmed && !eggActive() && now64 - gPmBootAtMs >= kPmArmDelayMs) {
     pmEnableLightSleep();
     gPmArmed = pmLightSleepArmed();
   }
 
-  readButtons(now);
-  applyBridge(now);
-  sampleSensors(now);
-  updateTelemetry(now);
-  checkEggRequestTimeout(now);
-  saveSettingsIfDue(now);
+  readButtons(now64, now32);
+  applyBridge(now64, now32);
+  sampleSensors(now64);
+  updateTelemetry(now64);
+  checkEggRequestTimeout(now64, now32);
+  saveSettingsIfDue(now64);
 
   const LocalFocusMode focusBefore = gFocusRequest.mode;
-  expireFocusIfNeeded(gFocusRequest, now);
+  expireFocusIfNeeded(gFocusRequest, now32);
   if (focusBefore != gFocusRequest.mode) {
     netWorkerSetFocus(gFocusRequest);  // pinned agent timed out back to AUTO
     gForceRender = true;
@@ -429,7 +470,7 @@ void AppController::tick() {
       pmEggPerformanceOn();
       gRenderer.setPanelHighPowerMode(true);
     }
-    eggTick(*panel, now);
+    eggTick(*panel, now32);
     gEggWasActive = true;
     delay(2);
     return;
@@ -442,11 +483,7 @@ void AppController::tick() {
     gForceRender = true;
   }
 
-  if (gForceRender || now - gLastRender >= kRenderIntervalMs) {
-    // Everything drawn derives from the hysteresis-filtered voltage and climate:
-    // the nonlinear battery percent curve and 0.1 C / 1% rounding amplify small
-    // sensor steps, so the panel follows the deadband-filtered values while raw
-    // readings keep driving telemetry and the protection guard untouched.
+  if (gForceRender || now64 - gLastRender >= kRenderIntervalMs) {
     PowerState displayPower = gPower;
     displayPower.voltageMv = gShownVoltageMv;
     displayPower.percent = gPower.sampleOk ? mapBatteryPercent(gShownVoltageMv) : gPower.percent;
@@ -457,14 +494,17 @@ void AppController::tick() {
     const DisplayState view = deriveDisplayState(gAgent, displayPower, displayEnv, gSettings.page,
                                                  gNetwork, gSettings.display, gPacingMode);
     gRenderer.render(view, displayPower);
-    gLastRender = now;
+    gLastRender = now64;
     gForceRender = false;
   }
-  // Idle pacing: buttons wake the chip from light sleep via the RTC pads; when
-  // a button is actively held (or during the egg request window), poll every
-  // 50 ms for crisp gesture timing, and relax to 200 ms when idle to halve CPU
-  // wakeups.
-  const bool buttonsActive = gBootButton.wasPressed || gKeyButton.wasPressed || gEggChord.active ||
-                             gEggRequestedAt != 0;
-  delay(buttonsActive ? 50 : 200);
+
+  // When a button is held (or awaiting an egg response), sample at 50 ms for
+  // crisp gesture timing; when idle, sleep until the next sensor/clock deadline
+  // and wake immediately via Core 1's GPIO wake + idle hook or netTask notify.
+  const bool buttonsActive = gBootButton.wasPressed || gKeyButton.wasPressed || gEggChord.active || gEggPending;
+  if (buttonsActive) {
+    delay(50);
+  } else {
+    pmWaitForAppWake(computeIdleSleepMs(pmMonotonicMs(), millis()));
+  }
 }

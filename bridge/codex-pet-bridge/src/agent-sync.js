@@ -13,7 +13,12 @@ import { readHermesLogActivity } from "./hermes-log-sync.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const NOTIFY_CLIENT = resolve(HERE, "notify-client.js");
-const STATE_PATH = resolve(process.env.PET_AGENT_SYNC_STATE || join(homedir(), ".codex-pet-bridge", "agent-sync-state.json"));
+const DEFAULT_OUTBOX_PATH = resolve(
+  process.env.PET_NOTIFY_OUTBOX || join(homedir(), ".codex-pet-bridge", "notify-outbox.jsonl")
+);
+const STATE_PATH = resolve(
+  process.env.PET_AGENT_SYNC_STATE || join(homedir(), ".codex-pet-bridge", "agent-sync-state.json")
+);
 const CODEX_SESSIONS_DIR = resolve(process.env.CODEX_SESSIONS_DIR || join(homedir(), ".codex", "sessions"));
 const CLAUDE_PROJECTS_DIR = resolve(process.env.PET_BRIDGE_CLAUDE_PROJECTS || DEFAULT_CLAUDE_PROJECTS_DIR);
 const ANTIGRAVITY_GEMINI_DIR = resolve(
@@ -26,91 +31,171 @@ const HERMES_COMPLETED_WINDOW_MS = numberFromEnv("PET_AGENT_SYNC_HERMES_COMPLETE
 const REFRESH_MS = numberFromEnv("PET_AGENT_SYNC_REFRESH_MS", 90000);
 const WATCH_INTERVAL_MS = numberFromEnv("PET_AGENT_SYNC_INTERVAL_MS", 15000);
 
-const args = new Set(process.argv.slice(2));
-if (args.has("--help")) {
-  printHelp();
-  process.exit(0);
+function isActiveRealtime(rt) {
+  return Boolean(
+    rt &&
+      rt.status &&
+      rt.status !== "idle" &&
+      rt.status !== "completed" &&
+      rt.status !== "failed" &&
+      rt.status !== "error"
+  );
 }
 
-if (args.has("--watch")) {
-  await tick();
-  setInterval(() => void tick(), WATCH_INTERVAL_MS);
-} else {
-  await tick();
+function notifyArgsToEvent(extraArgs) {
+  const out = {};
+  for (let i = 0; i < extraArgs.length; i += 1) {
+    const arg = extraArgs[i];
+    if (arg === "--source") out.source = extraArgs[++i] || "";
+    else if (arg === "--task") out.task = extraArgs[++i] || "";
+    else if (arg === "--status") out.status = extraArgs[++i] || "";
+    else if (arg === "--message") out.message = extraArgs[++i] || "";
+    else if (arg === "--session-id") out.sessionId = extraArgs[++i] || "";
+    else if (arg === "--workspace") out.workspace = extraArgs[++i] || "";
+    else if (arg === "--notify") out.notify = true;
+    else if (arg === "--no-notify") out.notify = false;
+  }
+  return out;
 }
 
-async function tick() {
-  const state = await loadState();
-  await updateChannel(state, {
+export async function runAgentSyncTick({
+  statePath = STATE_PATH,
+  sourcePrefix = SOURCE_PREFIX,
+  codexSessionsDir = CODEX_SESSIONS_DIR,
+  claudeProjectsDir = CLAUDE_PROJECTS_DIR,
+  antigravityGeminiDir = ANTIGRAVITY_GEMINI_DIR,
+  hermesLogPath = HERMES_LOG_PATH,
+  codexRealtime = undefined,
+  claudeRealtime = undefined,
+  antigravityRealtime = undefined,
+  emitEvent = null,
+  flushOutbox = null
+} = {}) {
+  const state = await loadStateFrom(statePath);
+  const sendEvent = async (payload) => {
+    if (emitEvent) {
+      await emitEvent(payload);
+      return true;
+    }
+    const cliArgs = [
+      "--source", payload.source || "",
+      "--task", payload.task || "",
+      "--status", payload.status || "running",
+      "--message", payload.message || "",
+      payload.notify ? "--notify" : "--no-notify"
+    ];
+    if (payload.sessionId) cliArgs.push("--session-id", payload.sessionId);
+    if (payload.workspace) cliArgs.push("--workspace", payload.workspace);
+    return notify(cliArgs);
+  };
+
+  const resolvedCodexRt = codexRealtime !== undefined ? codexRealtime : null;
+  const codexIsActive =
+    resolvedCodexRt !== null ? isActiveRealtime(resolvedCodexRt) : await codexActive(codexSessionsDir);
+  await updateChannel(state, sendEvent, {
     key: "codex",
-    active: await codexActive(),
-    source: `${SOURCE_PREFIX}-codex`,
-    task: `${SOURCE_PREFIX}-codex-runtime`,
-    runningMessage: `${SOURCE_PREFIX} Codex task is running`,
-    doneMessage: `${SOURCE_PREFIX} Codex task finished`
+    active: codexIsActive,
+    source: `${sourcePrefix}-codex`,
+    task: resolvedCodexRt?.task || `${sourcePrefix}-codex-runtime`,
+    workspace: resolvedCodexRt?.workspace || "",
+    sessionId: resolvedCodexRt?.sessionId || "",
+    runningMessage: `${sourcePrefix} Codex task is running`,
+    doneMessage: `${sourcePrefix} Codex task finished`
   });
-  await updateChannel(state, {
+
+  const resolvedClaudeRt =
+    claudeRealtime !== undefined
+      ? claudeRealtime
+      : await resolveClaudeState(claudeProjectsDir, sourcePrefix);
+  const claudeIsActive =
+    resolvedClaudeRt !== null
+      ? isActiveRealtime(resolvedClaudeRt)
+      : process.env.PET_AGENT_SYNC_CLAUDE !== "0" &&
+        (!existsSync(claudeProjectsDir) || process.env.PET_AGENT_SYNC_CLAUDE_PROCESS_SCAN === "1") &&
+        claudeProcessActive();
+  await updateChannel(state, sendEvent, {
     key: "claude",
-    active: await claudeActive(),
-    source: `${SOURCE_PREFIX}-claude`,
-    task: `${SOURCE_PREFIX}-claude-session`,
-    runningMessage: `${SOURCE_PREFIX} Claude Code is working`,
-    doneMessage: `${SOURCE_PREFIX} Claude Code response stopped`
+    active: claudeIsActive,
+    source: `${sourcePrefix}-claude`,
+    task: resolvedClaudeRt?.task || `${sourcePrefix}-claude-session`,
+    workspace: resolvedClaudeRt?.workspace || "",
+    sessionId: resolvedClaudeRt?.sessionId || "",
+    runningMessage: `${sourcePrefix} Claude Code is working`,
+    doneMessage: `${sourcePrefix} Claude Code response stopped`
   });
-  await updateChannel(state, {
+
+  const resolvedAgRt =
+    antigravityRealtime !== undefined
+      ? antigravityRealtime
+      : await resolveAntigravityState(antigravityGeminiDir, sourcePrefix);
+  await updateChannel(state, sendEvent, {
     key: "antigravity",
-    active: await antigravityActive(),
-    source: `${SOURCE_PREFIX}-antigravity`,
-    task: `${SOURCE_PREFIX}-antigravity-session`,
-    runningMessage: `${SOURCE_PREFIX} Antigravity is working`,
-    doneMessage: `${SOURCE_PREFIX} Antigravity response stopped`
+    active: isActiveRealtime(resolvedAgRt),
+    source: `${sourcePrefix}-antigravity`,
+    task: resolvedAgRt?.task || `${sourcePrefix}-antigravity-session`,
+    workspace: resolvedAgRt?.workspace || "",
+    sessionId: "",
+    runningMessage: `${sourcePrefix} Antigravity is working`,
+    doneMessage: `${sourcePrefix} Antigravity response stopped`
   });
-  await updateHermesLogChannel(state);
-  notify(["--flush"]);
+
+  await updateHermesLogChannel(state, sendEvent, hermesLogPath);
+  if (flushOutbox) {
+    await flushOutbox();
+  } else if (!emitEvent && existsSync(DEFAULT_OUTBOX_PATH)) {
+    notify(["--flush"]);
+  }
   state.updatedAt = new Date().toISOString();
-  await saveState(state);
+  await saveStateTo(statePath, state);
 }
 
-async function updateChannel(state, options) {
+async function updateChannel(state, sendEvent, options) {
   const now = Date.now();
   const wasActive = Boolean(state[`${options.key}Active`]);
   const lastNotify = Number(state[`${options.key}LastRunningNotify`] || 0);
   if (options.active) {
+    if (options.workspace) state[`${options.key}LastWorkspace`] = options.workspace;
+    if (options.sessionId) state[`${options.key}LastSessionId`] = options.sessionId;
+    if (options.task) state[`${options.key}LastTask`] = options.task;
     if (!wasActive || now - lastNotify >= REFRESH_MS) {
-      notify([
-        "--source", options.source,
-        "--task", options.task,
-        "--status", "running",
-        "--message", options.runningMessage,
-        "--no-notify"
-      ]);
+      await sendEvent({
+        source: options.source,
+        task: options.task,
+        workspace: options.workspace || "",
+        sessionId: options.sessionId || "",
+        status: "running",
+        message: options.runningMessage,
+        notify: false
+      });
       state[`${options.key}LastRunningNotify`] = now;
     }
     state[`${options.key}Active`] = true;
     state[`${options.key}LastSeen`] = now;
   } else if (wasActive) {
-    notify([
-      "--source", options.source,
-      "--task", options.task,
-      "--status", "completed",
-      "--message", options.doneMessage,
-      "--notify"
-    ]);
+    await sendEvent({
+      source: options.source,
+      task: options.task || state[`${options.key}LastTask`] || "",
+      workspace: options.workspace || state[`${options.key}LastWorkspace`] || "",
+      sessionId: options.sessionId || state[`${options.key}LastSessionId`] || "",
+      status: "completed",
+      message: options.doneMessage,
+      notify: true
+    });
     state[`${options.key}Active`] = false;
     state[`${options.key}LastRunningNotify`] = 0;
   }
 }
 
-async function updateHermesLogChannel(state) {
-  const activity = readHermesLogActivity(HERMES_LOG_PATH, {
+async function updateHermesLogChannel(state, sendEvent, hermesLogPath = HERMES_LOG_PATH) {
+  const activity = readHermesLogActivity(hermesLogPath, {
     activeWindowMs: ACTIVE_WINDOW_MS,
     completedWindowMs: HERMES_COMPLETED_WINDOW_MS
   });
   const { notifications } = buildHermesLogSyncNotifications(state, activity, {
     refreshMs: REFRESH_MS
   });
-  for (const args of notifications) {
-    notify(args);
+  for (const notifyArgs of notifications) {
+    await sendEvent(notifyArgsToEvent(notifyArgs));
   }
 }
 
@@ -122,13 +207,14 @@ function notify(extraArgs) {
   return result.status === 0;
 }
 
-async function codexActive() {
-  return (await codexSessionActive()) || codexCliActive();
+async function codexActive(codexSessionsDir = CODEX_SESSIONS_DIR) {
+  return (await codexSessionActive(codexSessionsDir)) || codexCliActive();
 }
 
-async function codexSessionActive() {
+async function codexSessionActive(codexSessionsDir = CODEX_SESSIONS_DIR) {
+  if (!existsSync(codexSessionsDir)) return false;
   const now = Date.now();
-  const files = listRecentJsonl(CODEX_SESSIONS_DIR, 12);
+  const files = listRecentJsonl(codexSessionsDir, 12);
   for (const path of files) {
     const age = now - path.mtimeMs;
     if (age > ACTIVE_WINDOW_MS) continue;
@@ -151,36 +237,24 @@ function codexCliActive() {
   return false;
 }
 
-// Claude Code writes a transcript per session; when those exist they say
-// exactly when a turn is running. The process scan is only a fallback.
-async function claudeActive() {
-  if (process.env.PET_AGENT_SYNC_CLAUDE === "0") return false;
-  if (existsSync(CLAUDE_PROJECTS_DIR)) {
-    const state = await loadClaudeRealtimeState({
-      projectsDir: CLAUDE_PROJECTS_DIR,
-      activeWindowMs: ACTIVE_WINDOW_MS,
-      sourcePrefix: SOURCE_PREFIX
-    }).catch(() => null);
-    if (state) return state.status !== "completed";
-    if (process.env.PET_AGENT_SYNC_CLAUDE_PROCESS_SCAN !== "1") return false;
-  }
-  return claudeProcessActive();
+async function resolveClaudeState(claudeProjectsDir, sourcePrefix) {
+  if (process.env.PET_AGENT_SYNC_CLAUDE === "0") return null;
+  if (!existsSync(claudeProjectsDir)) return null;
+  return loadClaudeRealtimeState({
+    projectsDir: claudeProjectsDir,
+    activeWindowMs: ACTIVE_WINDOW_MS,
+    sourcePrefix
+  }).catch(() => null);
 }
 
-async function antigravityActive() {
-  if (process.env.PET_AGENT_SYNC_ANTIGRAVITY === "0") return false;
-  if (!existsSync(ANTIGRAVITY_GEMINI_DIR)) return false;
-  const state = await loadAntigravityRealtimeState({
-    geminiDir: ANTIGRAVITY_GEMINI_DIR,
+async function resolveAntigravityState(antigravityGeminiDir, sourcePrefix) {
+  if (process.env.PET_AGENT_SYNC_ANTIGRAVITY === "0") return null;
+  if (!existsSync(antigravityGeminiDir)) return null;
+  return loadAntigravityRealtimeState({
+    geminiDir: antigravityGeminiDir,
     activeWindowMs: Math.max(ACTIVE_WINDOW_MS, 180_000),
-    sourcePrefix: SOURCE_PREFIX
+    sourcePrefix
   }).catch(() => null);
-  return Boolean(
-    state &&
-      state.status !== "completed" &&
-      state.status !== "failed" &&
-      state.status !== "error"
-  );
 }
 
 function claudeProcessActive() {
@@ -266,17 +340,17 @@ async function lastJsonPayload(path) {
   }
 }
 
-async function loadState() {
+async function loadStateFrom(statePath = STATE_PATH) {
   try {
-    return JSON.parse(await readFile(STATE_PATH, "utf8"));
+    return JSON.parse(await readFile(statePath, "utf8"));
   } catch {
     return {};
   }
 }
 
-async function saveState(state) {
-  await mkdir(dirname(STATE_PATH), { recursive: true });
-  await writeFile(STATE_PATH, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+async function saveStateTo(statePath = STATE_PATH, state = {}) {
+  await mkdir(dirname(statePath), { recursive: true });
+  await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
 }
 
 function numberFromEnv(name, fallback) {
@@ -298,4 +372,22 @@ Environment:
   PET_AGENT_SYNC_HERMES_LOG=~/.hermes/logs/agent.log
   PET_AGENT_SYNC_INTERVAL_MS=15000
 `);
+}
+
+const isMainModule =
+  Boolean(process.argv[1]) && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (isMainModule) {
+  const args = new Set(process.argv.slice(2));
+  if (args.has("--help")) {
+    printHelp();
+    process.exit(0);
+  }
+
+  if (args.has("--watch")) {
+    await runAgentSyncTick();
+    setInterval(() => void runAgentSyncTick(), WATCH_INTERVAL_MS);
+  } else {
+    await runAgentSyncTick();
+  }
 }

@@ -41,9 +41,17 @@ bool pmLightSleepArmed();
 void pmEggPerformanceOn();
 void pmEggPerformanceOff();
 
-// RTC-pad GPIO wakeup (official light-sleep wake path) plus a plain interrupt
-// for BOOT and KEY, so a press resumes the loop promptly.
+// RTC-pad GPIO wakeup (official light-sleep wake path) plus a Core 1 FreeRTOS
+// idle-hook check so button wakes and cross-core poll updates resume loop()
+// immediately without a 5 Hz polling floor.
 void pmSetupButtonWakeup(int bootPin, int keyPin);
+void pmRegisterAppTaskWakeup();
+void pmNotifyAppTask();
+void pmWaitForAppWake(uint32_t sleepMs);
+
+// Monotonic 64-bit millisecond clock backed by esp_timer_get_time() on device
+// (immune to the 49.7-day uint32_t millis() wraparound).
+uint64_t pmMonotonicMs();
 
 // Before a deliberate deep sleep (low-battery protection): turns auto light
 // sleep off so no idle sleep can race the sleep entry.

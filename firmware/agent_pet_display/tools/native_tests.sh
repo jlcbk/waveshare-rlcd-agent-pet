@@ -41,7 +41,7 @@ for dir in "$FW"/test/native/*/; do
     continue
   fi
   if ! "$CXX" -std=gnu++17 -O0 -g -Wall -Wextra -Wno-unused-parameter -DPIO_UNIT_TESTING \
-      -I"$FW/include" -I"$UNITY_DIR/src" -I"$ARDUINOJSON_DIR/src" \
+      -I"$FW/include" -I"$FW/src" -I"$FW/test/native/test_wake_path/shim" -I"$UNITY_DIR/src" -I"$ARDUINOJSON_DIR/src" \
       "$dir"/*.cpp "${SRC_PATHS[@]}" "$BUILD/unity.o" -o "$BUILD/$name" 2>"$BUILD/$name.log"; then
     echo "$name: BUILD FAILED"
     sed -n '1,40p' "$BUILD/$name.log"

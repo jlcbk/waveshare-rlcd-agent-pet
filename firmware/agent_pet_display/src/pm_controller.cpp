@@ -2,15 +2,6 @@
 
 #include <math.h>
 
-// A/B switch: waveshare_rlcd_pmoff builds the same PM-enabled SDK and the same
-// code path with light sleep compiled out, so current readings differ only by
-// the light-sleep bit (see platformio.ini).
-#ifdef RLCD_PM_DISABLE_LIGHT_SLEEP
-constexpr bool kLightSleepCompileEnabled = false;
-#else
-constexpr bool kLightSleepCompileEnabled = true;
-#endif
-
 // AwakeStats is pure logic and identical on host and device builds.
 void AwakeStats::begin(uint32_t cycles, int64_t wallUs) {
   resetWindow(cycles, wallUs);
@@ -52,10 +43,17 @@ int AwakeStats::awakePercent(int cpuFreqMhz) const {
 #ifdef ARDUINO
 
 #include <Arduino.h>
+#include "sdkconfig.h"
+#if defined(RLCD_REQUIRE_PM_SDK) && (!defined(CONFIG_PM_ENABLE) || !defined(CONFIG_FREERTOS_USE_TICKLESS_IDLE))
+#error "waveshare_rlcd_pm requires the PM-enabled ESP32-S3 SDK (CONFIG_PM_ENABLE + CONFIG_FREERTOS_USE_TICKLESS_IDLE). Run firmware/agent_pet_display/tools/pm-libs/pio-pm.sh instead of bare pio."
+#endif
 #include "driver/gpio.h"
+#include "esp_freertos_hooks.h"
 #include "esp_pm.h"
 #include "esp_sleep.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "xtensa/hal.h"
 
 // Counted inside esp_light_sleep_start by the round-3 SDK patch (see
@@ -64,6 +62,12 @@ int AwakeStats::awakePercent(int cpuFreqMhz) const {
 extern "C" uint32_t esp_sleep_get_light_sleep_count(void) __attribute__((weak));
 
 namespace {
+
+#ifdef RLCD_PM_DISABLE_LIGHT_SLEEP
+constexpr bool kLightSleepCompileEnabled = false;
+#else
+constexpr bool kLightSleepCompileEnabled = true;
+#endif
 
 constexpr int kIdleFreqMhz = 80;
 constexpr int kIdleMinFreqMhz = 20;  // XTAL/2 DFS floor while awake; Wi-Fi PM locks lift it to 80 on demand
@@ -80,7 +84,23 @@ bool gPmOk = false;
 bool gLightSleepWanted = false;
 bool gArmSettled = false;
 bool gLocksDumped = false;
+TaskHandle_t gAppTaskHandle = nullptr;
+int gBootWakePin = -1;
+int gKeyWakePin = -1;
+bool gIdleHookRegistered = false;
+volatile bool gWaitingForButtonWake = false;
 AwakeStats gStats;
+
+bool onIdleCheckButtonWake() {
+  if (gWaitingForButtonWake && gAppTaskHandle != nullptr &&
+      ((gBootWakePin >= 0 && gpio_get_level(static_cast<gpio_num_t>(gBootWakePin)) == 0) ||
+       (gKeyWakePin >= 0 && gpio_get_level(static_cast<gpio_num_t>(gKeyWakePin)) == 0))) {
+    gWaitingForButtonWake = false;
+    xTaskNotifyGive(gAppTaskHandle);
+    return false;  // yield immediately to woken loopTask instead of re-entering waiti
+  }
+  return true;  // allow esp_pm_impl_waiti / tickless light sleep
+}
 
 // Survives chip resets (not power cycles): evidence for the last stats window
 // even if the console dropped while the chip was sleeping.
@@ -167,21 +187,52 @@ void pmEggPerformanceOff() {
 }
 
 void pmSetupButtonWakeup(int bootPin, int keyPin) {
-  // IDF 4.4 light-sleep GPIO wake, and nothing else: attachInterrupt would
-  // rewrite the same pin.int_type field (esp32-hal-gpio.c -> gpio_set_intr_type)
-  // and clobber the LOW_LEVEL wake trigger, and a LOW_LEVEL CPU interrupt
-  // would storm while the button is held. The buttons are polled by the main
-  // loop when awake, so no runtime GPIO interrupt is needed at all.
+  // IDF 4.4 light-sleep GPIO wake, and nothing else on pin.int_type:
+  // attachInterrupt would rewrite pin.int_type and clobber GPIO_INTR_LOW_LEVEL.
+  // Instead, onIdleCheckButtonWake() runs on Core 1's FreeRTOS idle loop right
+  // after esp_light_sleep_start() returns and wakes loopTask via xTaskNotifyGive.
+  gBootWakePin = bootPin;
+  gKeyWakePin = keyPin;
   const esp_err_t b1 = gpio_wakeup_enable(static_cast<gpio_num_t>(bootPin), GPIO_INTR_LOW_LEVEL);
   const esp_err_t b2 = gpio_wakeup_enable(static_cast<gpio_num_t>(keyPin), GPIO_INTR_LOW_LEVEL);
   const esp_err_t g = esp_sleep_enable_gpio_wakeup();
-  Serial.printf("[PM] button wake: boot=0x%x key=0x%x group=0x%x\n", b1, b2, g);
+  esp_err_t hookErr = ESP_OK;
+  if (!gIdleHookRegistered) {
+    hookErr = esp_register_freertos_idle_hook_for_cpu(onIdleCheckButtonWake, 1);
+    gIdleHookRegistered = (hookErr == ESP_OK);
+  }
+  Serial.printf("[PM] button wake: boot=0x%x key=0x%x group=0x%x hook=0x%x\n", b1, b2, g, hookErr);
+}
+
+void pmRegisterAppTaskWakeup() {
+  gAppTaskHandle = xTaskGetCurrentTaskHandle();
+}
+
+void pmNotifyAppTask() {
+  if (gAppTaskHandle != nullptr) {
+    xTaskNotifyGive(gAppTaskHandle);
+  }
+}
+
+void pmWaitForAppWake(uint32_t sleepMs) {
+  if (sleepMs == 0) {
+    return;
+  }
+  gWaitingForButtonWake = true;
+  ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(sleepMs));
+  gWaitingForButtonWake = false;
+}
+
+uint64_t pmMonotonicMs() {
+  const int64_t us = esp_timer_get_time();
+  return us > 0 ? static_cast<uint64_t>(us / 1000LL) : 0ULL;
 }
 
 // Before a deliberate deep sleep (low-battery protection): auto light sleep
 // off so the idle hook cannot start one between the caller's last draws and
 // esp_deep_sleep_start. DFS bounds stay; the clock does not matter anymore.
 void pmPrepareDeepSleep() {
+  gWaitingForButtonWake = false;
   if (gPmOk) {
     applyPmConfig(kIdleFreqMhz, kIdleMinFreqMhz, false);
   }
@@ -189,26 +240,22 @@ void pmPrepareDeepSleep() {
   gArmSettled = false;
 }
 
-void pmTick(uint32_t now) {
-  static uint32_t sLastLogMs = 0;
+void pmTick(uint32_t) {
+  static uint64_t sLastLogMs = 0;
+  static bool sInitialized = false;
+  const uint64_t now64 = pmMonotonicMs();
   gStats.sample(xthal_get_ccount(), esp_timer_get_time());
-  if (sLastLogMs == 0) {
-    sLastLogMs = now;
+  if (!sInitialized) {
+    sInitialized = true;
+    sLastLogMs = now64;
     return;
   }
-  if (now - sLastLogMs < kStatsWindowMs) {
+  if (now64 - sLastLogMs < kStatsWindowMs) {
     return;
   }
   const int freq = getCpuFrequencyMhz();
   const int percent = gStats.awakePercent(freq);
   gLastWindowAwakePercent = static_cast<float>(percent);
-  // Evidence, ordered by strength:
-  //  1. light_sleep_count > 0: SDK-patched counter of completed light sleeps.
-  //  2. wakeup_cause != UNDEFINED: at least one wake from an actual sleep
-  //     (set only by a completed esp_light_sleep_start, which auto light
-  //     sleep uses internally); says nothing about count or duration.
-  //  3. duty estimate: awake-cycle vs wall-clock ratio. Frequency changes
-  //     and idle behaviour skew it, so it is an estimate, not proof.
   const esp_sleep_source_t cause = esp_sleep_get_wakeup_cause();
   if (esp_sleep_get_light_sleep_count != nullptr) {
     Serial.printf("[PM] light_sleep_count=%u wakeup_cause=%d duty~%d%% (estimate, cpu=%dMHz, ls=%s)\n",
@@ -225,7 +272,7 @@ void pmTick(uint32_t now) {
     gLocksDumped = true;
   }
   gStats.resetWindow(xthal_get_ccount(), esp_timer_get_time());
-  sLastLogMs = now;
+  sLastLogMs = now64;
 }
 
 #else  // native builds
@@ -241,6 +288,12 @@ bool pmLightSleepArmed() {
 void pmEggPerformanceOn() {}
 void pmEggPerformanceOff() {}
 void pmSetupButtonWakeup(int, int) {}
+void pmRegisterAppTaskWakeup() {}
+void pmNotifyAppTask() {}
+void pmWaitForAppWake(uint32_t) {}
+uint64_t pmMonotonicMs() {
+  return 0ULL;
+}
 void pmPrepareDeepSleep() {}
 void pmTick(uint32_t) {}
 

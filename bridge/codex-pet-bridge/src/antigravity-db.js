@@ -434,32 +434,101 @@ function dbFingerprint(dbPath) {
   }
 }
 
+const TAIL_RECHECK_STEPS = 4;
+
+function addUsageIntoTotals(totals, usage) {
+  if (!usage) return;
+  for (const key of Object.keys(totals)) {
+    const v = usage[key];
+    totals[key] += typeof v === "number" && Number.isSafeInteger(v) && v > 0 ? v : 0;
+  }
+}
+
+async function queryStepsFrom(dbPath, minIdx) {
+  const where = minIdx > 0 ? ` WHERE idx >= ${minIdx}` : "";
+  let rows = await sqliteQuery(
+    dbPath,
+    `SELECT idx, step_type, status, CASE WHEN step_type = 15 THEN hex(metadata) ELSE NULL END AS meta_hex FROM steps${where} ORDER BY idx`
+  );
+  if (rows === null) {
+    rows = await sqliteQuery(dbPath, `SELECT idx, step_type, status FROM steps${where} ORDER BY idx`);
+  }
+  return rows;
+}
+
 async function readConversationUncached(dbPath, fingerprint) {
   const cached = conversationCache.get(dbPath) || null;
-  let stepRows = await sqliteQuery(
-    dbPath,
-    "SELECT idx, step_type, status, CASE WHEN step_type = 15 THEN hex(metadata) ELSE NULL END AS meta_hex FROM steps ORDER BY idx"
-  );
-  if (stepRows === null) {
-    stepRows = await sqliteQuery(dbPath, "SELECT idx, step_type, status FROM steps ORDER BY idx");
-  }
+  let usePrefix = Boolean(cached && Number.isInteger(cached.cursorIdx) && cached.cursorIdx > 0);
+  let cursorIdx = usePrefix ? cached.cursorIdx : 0;
+
+  let stepRows = await queryStepsFrom(dbPath, cursorIdx);
   if (stepRows === null) return null;
 
-  const counts = {};
-  let lastStep = null;
-  const stepUsages = [];
+  // Detect conversation rewind / truncation: cursorIdx must still exist as the first returned row.
+  if (usePrefix && (stepRows.length === 0 || Number(stepRows[0].idx) !== cursorIdx)) {
+    usePrefix = false;
+    cursorIdx = 0;
+    stepRows = await queryStepsFrom(dbPath, 0);
+    if (stepRows === null) return null;
+  }
+
+  const counts = usePrefix ? { ...cached.baseCounts } : {};
+  const stepUsages = usePrefix ? cached.baseStepUsages.slice() : [];
+  const stepUsageTotals = usePrefix
+    ? { ...cached.baseTotals }
+    : { input: 0, cacheRead: 0, thinking: 0, output: 0, totalOutput: 0 };
+  let stepTotal = usePrefix ? cached.baseCountTotal : 0;
+  let lastStep = usePrefix ? cached.baseLastStep : null;
+
+  const parsedTail = [];
   for (const row of stepRows) {
     const idx = Number(row.idx);
     const stepType = Number(row.step_type);
     const status = row.status == null ? null : Number(row.status);
     const key = String(stepType);
     counts[key] = (counts[key] ?? 0) + 1;
+    stepTotal += 1;
     lastStep = { idx, stepType, status };
+    let usageEntry = null;
     if (stepType === 15 && row.meta_hex) {
       const sm = decodeStepMeta(Buffer.from(String(row.meta_hex), "hex"));
       if (sm?.usage) {
-        stepUsages.push({ idx, timestampMs: sm.timestampMs, usage: sm.usage });
+        usageEntry = { idx, timestampMs: sm.timestampMs, usage: sm.usage };
+        stepUsages.push(usageEntry);
+        addUsageIntoTotals(stepUsageTotals, sm.usage);
       }
+    }
+    parsedTail.push({ idx, stepType, status, key, usageEntry });
+  }
+
+  // Advance immutable prefix up to (maxIdx - TAIL_RECHECK_STEPS), stopping before any running step.
+  const baseCounts = usePrefix ? { ...cached.baseCounts } : {};
+  const baseStepUsages = usePrefix ? cached.baseStepUsages.slice() : [];
+  const baseTotals = usePrefix
+    ? { ...cached.baseTotals }
+    : { input: 0, cacheRead: 0, thinking: 0, output: 0, totalOutput: 0 };
+  let baseCountTotal = usePrefix ? cached.baseCountTotal : 0;
+  let baseLastStep = usePrefix ? cached.baseLastStep : null;
+  let nextCursorIdx = cursorIdx;
+  const maxIdx = lastStep ? lastStep.idx : -1;
+  const freezeLimitIdx = maxIdx - TAIL_RECHECK_STEPS;
+
+  for (let i = 0; i < parsedTail.length; i += 1) {
+    const item = parsedTail[i];
+    const isRunning = item.status === 1 || item.status === 2;
+    if (isRunning || item.idx > freezeLimitIdx) {
+      nextCursorIdx = item.idx;
+      break;
+    }
+    baseCounts[item.key] = (baseCounts[item.key] ?? 0) + 1;
+    baseCountTotal += 1;
+    baseLastStep = { idx: item.idx, stepType: item.stepType, status: item.status };
+    if (item.usageEntry) {
+      baseStepUsages.push(item.usageEntry);
+      addUsageIntoTotals(baseTotals, item.usageEntry.usage);
+    }
+    if (i + 1 < parsedTail.length) {
+      nextCursorIdx = parsedTail[i + 1].idx;
     }
   }
 
@@ -470,27 +539,30 @@ async function readConversationUncached(dbPath, fingerprint) {
   let lastMetaIdx = -1;
 
   if (stepUsages.length > 0) {
-    totals = { input: 0, cacheRead: 0, thinking: 0, output: 0, totalOutput: 0 };
+    totals = stepUsageTotals;
     count = stepUsages.length;
-    for (const s of stepUsages) {
-      if (Number.isInteger(s.idx) && s.idx > lastMetaIdx) lastMetaIdx = s.idx;
-      for (const key of Object.keys(totals)) {
-        const v = s.usage[key];
-        totals[key] += typeof v === "number" && Number.isSafeInteger(v) && v > 0 ? v : 0;
+    lastMetaIdx = stepUsages[stepUsages.length - 1].idx;
+    const reuseLastGen =
+      cached &&
+      cached.lastGen &&
+      cached.lastMaxIdx === maxIdx &&
+      cached.lastStepStatus === (lastStep?.status ?? null);
+    if (reuseLastGen) {
+      lastGen = cached.lastGen;
+    } else {
+      const lastMetaRows = await sqliteQuery(
+        dbPath,
+        "SELECT idx, hex(data) AS data_hex FROM gen_metadata ORDER BY idx DESC LIMIT 1"
+      );
+      if (lastMetaRows?.[0]?.data_hex) {
+        lastGen = decodeGenerationMeta(Buffer.from(String(lastMetaRows[0].data_hex), "hex"));
       }
-    }
-    const lastMetaRows = await sqliteQuery(
-      dbPath,
-      "SELECT idx, hex(data) AS data_hex FROM gen_metadata ORDER BY idx DESC LIMIT 1"
-    );
-    if (lastMetaRows?.[0]?.data_hex) {
-      lastGen = decodeGenerationMeta(Buffer.from(String(lastMetaRows[0].data_hex), "hex"));
     }
   } else {
     const canIncremental =
       cached &&
       !cached.usedStepMeta &&
-      stepRows.length >= cached.stepTotal &&
+      stepTotal >= cached.stepTotal &&
       Number.isInteger(cached.lastMetaIdx);
     const minMetaIdx = canIncremental ? cached.lastMetaIdx : -1;
 
@@ -527,10 +599,7 @@ async function readConversationUncached(dbPath, fingerprint) {
       }
       count++;
       lastGen = meta;
-      for (const key of Object.keys(totals)) {
-        const v = meta.usage[key];
-        totals[key] += typeof v === "number" && Number.isSafeInteger(v) && v > 0 ? v : 0;
-      }
+      addUsageIntoTotals(totals, meta.usage);
     }
   }
 
@@ -546,7 +615,7 @@ async function readConversationUncached(dbPath, fingerprint) {
   }
 
   const result = {
-    steps: { total: stepRows.length, counts, last: lastStep },
+    steps: { total: stepTotal, counts, last: lastStep },
     generations: { count, skipped, last: lastGen, totals: { ...totals } },
     stepUsages,
     workspace
@@ -555,8 +624,16 @@ async function readConversationUncached(dbPath, fingerprint) {
   if (fingerprint) {
     conversationCache.set(dbPath, {
       fingerprint,
+      cursorIdx: nextCursorIdx,
+      baseCounts,
+      baseStepUsages,
+      baseTotals,
+      baseCountTotal,
+      baseLastStep,
+      lastMaxIdx: maxIdx,
+      lastStepStatus: lastStep?.status ?? null,
       usedStepMeta: stepUsages.length > 0,
-      stepTotal: stepRows.length,
+      stepTotal,
       lastMetaIdx,
       totals: { ...totals },
       count,
@@ -733,72 +810,14 @@ export function candidateActivityTier(candidate) {
   return 1; // Tier 2: actively consuming LLM (thinking, working, searching, file read/edit)
 }
 
-export async function loadAntigravityRealtimeState({
-  geminiDir = DEFAULT_ANTIGRAVITY_GEMINI_DIR,
-  roots,
-  sourcePrefix = "local",
-  hookEvent = null,
-  hookAt = 0,
-  now = Date.now(),
-  activeWindowMs = 180_000,
-  toolWindowMs = 900_000,
-  completedHoldMs = 120_000
-} = {}) {
-  const windows = { activeWindowMs, toolWindowMs, completedHoldMs };
-  const rs = roots ?? defaultRoots(geminiDir);
-  const conversations = listConversations(rs);
-  const maxWindow = Math.max(activeWindowMs, toolWindowMs, completedHoldMs);
-  const freshConversations = conversations.filter((item) => now - item.mtimeMs <= maxWindow).slice(0, 6);
+function compareCandidates(left, right) {
+  const tierDiff = candidateActivityTier(left) - candidateActivityTier(right);
+  if (tierDiff !== 0) return tierDiff;
+  return (right?.timeMs || 0) - (left?.timeMs || 0);
+}
 
-  let bestTranscriptMatch = null;
-  for (const conv of freshConversations) {
-    const match = await evaluateConversationCandidate(conv, now, windows);
-    if (!match) continue;
-    if (!bestTranscriptMatch) {
-      bestTranscriptMatch = match;
-      continue;
-    }
-    const currTier = candidateActivityTier(match.candidate);
-    const bestTier = candidateActivityTier(bestTranscriptMatch.candidate);
-    if (currTier < bestTier) {
-      bestTranscriptMatch = match;
-    } else if (currTier === bestTier && match.candidate.timeMs > bestTranscriptMatch.candidate.timeMs) {
-      bestTranscriptMatch = match;
-    }
-  }
-
-  const active = bestTranscriptMatch?.conv ?? conversations[0] ?? null;
-  const activeDetail =
-    bestTranscriptMatch?.detail ?? (active && hookEvent ? await readConversation(active.dbPath) : null);
-  const generation = activeDetail?.generations?.last ?? null;
-  const transcriptCandidate = bestTranscriptMatch?.candidate ?? null;
-
-  let hookCandidate = null;
-  if (hookEvent && hookAt > 0) {
-    const eff = effectiveStatus(hookEvent, hookAt, now, windows);
-    if (eff.status && eff.status !== "idle") {
-      hookCandidate = {
-        status: eff.status,
-        tool: eff.tool || hookEvent.tool || "",
-        detail: eff.tool || hookEvent.tool || "",
-        time: hookEvent.time || new Date(hookAt).toISOString(),
-        timeMs: Date.parse(hookEvent.time || "") || hookAt,
-        sessionId: hookEvent.sessionId || active?.conversationId || "",
-        workspace: hookEvent.workspace || activeDetail?.workspace || "",
-        model: hookEvent.model && hookEvent.model !== "auto" ? hookEvent.model : ""
-      };
-    }
-  }
-
-  let chosen = null;
-  if (hookCandidate && transcriptCandidate) {
-    chosen = hookCandidate.timeMs >= transcriptCandidate.timeMs ? hookCandidate : transcriptCandidate;
-  } else {
-    chosen = hookCandidate || transcriptCandidate;
-  }
-
-  if (!chosen) return null;
-
+function materializeAntigravityState({ chosen, conv, detail, hookEvent, sourcePrefix }) {
+  const generation = detail?.generations?.last ?? null;
   const model =
     generation?.modelDisplay ||
     generation?.modelId ||
@@ -810,12 +829,13 @@ export async function loadAntigravityRealtimeState({
     ctx && Number.isFinite(ctx.current) && Number.isFinite(ctx.max) && ctx.max > 0
       ? { used: ctx.current, window: ctx.max, current: ctx.current, max: ctx.max }
       : null;
-  const workspace = chosen.workspace || activeDetail?.workspace || hookEvent?.workspace || "";
-  const sessionId = chosen.sessionId || active?.conversationId || hookEvent?.sessionId || "";
+  const workspace = chosen.workspace || detail?.workspace || "";
+  const sessionId = chosen.sessionId || conv?.conversationId || "";
+  const projectSlug = workspace ? path.basename(workspace.replace(/\/+$/, "")) : "";
 
   return {
     source: `${sourcePrefix}-antigravity`,
-    task: `${sourcePrefix}-antigravity-session`,
+    task: projectSlug || `${sourcePrefix}-antigravity-session`,
     status: chosen.status,
     time: chosen.time,
     sessionId,
@@ -825,8 +845,118 @@ export async function loadAntigravityRealtimeState({
     model,
     modelId: generation?.modelId || "",
     context,
-    sessionTokens: activeDetail?.generations?.totals || null
+    sessionTokens: detail?.generations?.totals || null
   };
+}
+
+export async function loadAntigravityRealtimeStates({
+  geminiDir = DEFAULT_ANTIGRAVITY_GEMINI_DIR,
+  roots,
+  sourcePrefix = "local",
+  hookEvent = null,
+  hookAt = 0,
+  ignoreConversationId = "",
+  now = Date.now(),
+  activeWindowMs = 180_000,
+  toolWindowMs = 900_000,
+  completedHoldMs = 120_000
+} = {}) {
+  const windows = { activeWindowMs, toolWindowMs, completedHoldMs };
+  const rs = roots ?? defaultRoots(geminiDir);
+  const conversations = listConversations(rs).filter(
+    (item) => !ignoreConversationId || item.conversationId !== ignoreConversationId
+  );
+  const maxWindow = Math.max(activeWindowMs, toolWindowMs, completedHoldMs);
+  const freshConversations = conversations.filter((item) => now - item.mtimeMs <= maxWindow).slice(0, 10);
+
+  // Deduplicate multiple tabs/subagents within the same workspace to the highest-priority one,
+  // while keeping distinct workspaces as independent focus slots.
+  const byWorkspace = new Map();
+  for (const conv of freshConversations) {
+    const match = await evaluateConversationCandidate(conv, now, windows);
+    if (!match) continue;
+    const key = match.candidate.workspace
+      ? `ws:${match.candidate.workspace}`
+      : `conv:${conv.conversationId}`;
+    const prev = byWorkspace.get(key);
+    if (!prev || compareCandidates(match.candidate, prev.candidate) < 0) {
+      byWorkspace.set(key, match);
+    }
+  }
+
+  let hookCandidate = null;
+  if (hookEvent && hookAt > 0 && (!ignoreConversationId || hookEvent.sessionId !== ignoreConversationId)) {
+    const eff = effectiveStatus(hookEvent, hookAt, now, windows);
+    if (eff.status && eff.status !== "idle") {
+      const fallbackConv = conversations[0] ?? null;
+      let fallbackDetail = null;
+      if (!hookEvent.workspace && fallbackConv) {
+        fallbackDetail = await readConversation(fallbackConv.dbPath);
+      }
+      hookCandidate = {
+        conv: fallbackConv,
+        detail: fallbackDetail,
+        candidate: {
+          status: eff.status,
+          tool: eff.tool || hookEvent.tool || "",
+          detail: eff.tool || hookEvent.tool || "",
+          time: hookEvent.time || new Date(hookAt).toISOString(),
+          timeMs: Date.parse(hookEvent.time || "") || hookAt,
+          sessionId: hookEvent.sessionId || fallbackConv?.conversationId || "",
+          workspace: hookEvent.workspace || fallbackDetail?.workspace || "",
+          model: hookEvent.model && hookEvent.model !== "auto" ? hookEvent.model : ""
+        }
+      };
+    }
+  }
+
+  if (hookCandidate) {
+    const hookKey = hookCandidate.candidate.workspace
+      ? `ws:${hookCandidate.candidate.workspace}`
+      : hookCandidate.candidate.sessionId
+        ? `conv:${hookCandidate.candidate.sessionId}`
+        : "hook:default";
+    let matchedKey = byWorkspace.has(hookKey) ? hookKey : "";
+    if (!matchedKey && hookCandidate.candidate.sessionId) {
+      for (const [k, v] of byWorkspace.entries()) {
+        if (v.candidate.sessionId === hookCandidate.candidate.sessionId) {
+          matchedKey = k;
+          break;
+        }
+      }
+    }
+    const existing = matchedKey ? byWorkspace.get(matchedKey) : null;
+    if (!existing) {
+      byWorkspace.set(hookKey, hookCandidate);
+    } else if (hookCandidate.candidate.timeMs >= existing.candidate.timeMs) {
+      byWorkspace.set(matchedKey, {
+        conv: existing.conv || hookCandidate.conv,
+        detail: existing.detail || hookCandidate.detail,
+        candidate: {
+          ...existing.candidate,
+          ...hookCandidate.candidate,
+          workspace: hookCandidate.candidate.workspace || existing.candidate.workspace,
+          sessionId: hookCandidate.candidate.sessionId || existing.candidate.sessionId
+        }
+      });
+    }
+  }
+
+  const entries = [...byWorkspace.values()].sort((a, b) => compareCandidates(a.candidate, b.candidate));
+  return entries.map((entry) =>
+    materializeAntigravityState({
+      chosen: entry.candidate,
+      conv: entry.conv,
+      detail: entry.detail,
+      hookEvent,
+      sourcePrefix
+    })
+  );
+}
+
+export async function loadAntigravityRealtimeState(options = {}) {
+  const states = await loadAntigravityRealtimeStates(options);
+  return states[0] ?? null;
 }
 
 export async function antigravityTokensToday({

@@ -164,6 +164,9 @@ if [[ -n "$ROLLBACK" ]]; then
       item "LaunchAgent $label"
       cp -p "$ROLLBACK/$label.plist" "$AGENTS_DIR/$label.plist"
       bootstrap_agent "$label" "$AGENTS_DIR/$label.plist"
+    elif [[ "$label" == "$SYNC_LABEL" && -f "$AGENTS_DIR/$label.plist" ]]; then
+      "$LAUNCHCTL" bootout "gui/$UID_NUM/$label" 2>/dev/null || true
+      rm -f "$AGENTS_DIR/$label.plist"
     fi
   done
   for file in "$HERMES_CONFIG" "$HERMES_ALLOWLIST" "$OPENCLAW_CONFIG"; do
@@ -238,7 +241,14 @@ extra_env_names() {
 }
 BRIDGE_EXTRA="$(extra_env_xml "$BRIDGE_PLIST" PATH PET_BRIDGE_HOST PET_BRIDGE_PORT PET_BRIDGE_TOKEN PET_BRIDGE_TOKEN_FILE \
   PET_BRIDGE_LOG PET_BRIDGE_STATE PET_AGENT_SYNC_PREFIX)"
-SYNC_EXTRA="$(extra_env_xml "$SYNC_PLIST" PATH PET_AGENT_SYNC_PREFIX PET_BRIDGE_URL PET_BRIDGE_TOKEN PET_BRIDGE_TOKEN_FILE)"
+BRIDGE_EXTRA_KEYS="$(extra_env_names "$BRIDGE_EXTRA")"
+# shellcheck disable=SC2086
+SYNC_EXTRA="$(extra_env_xml "$SYNC_PLIST" PATH PET_AGENT_SYNC_PREFIX PET_BRIDGE_URL PET_BRIDGE_TOKEN PET_BRIDGE_TOKEN_FILE \
+  PET_BRIDGE_HOST PET_BRIDGE_PORT PET_BRIDGE_LOG PET_BRIDGE_STATE $BRIDGE_EXTRA_KEYS)"
+if [[ -n "$SYNC_EXTRA" ]]; then
+  BRIDGE_EXTRA="${BRIDGE_EXTRA:+$BRIDGE_EXTRA
+}$SYNC_EXTRA"
+fi
 
 # Where the old LaunchAgent kept its event log. ~/Documents may have moved
 # into iCloud Drive, which is exactly what broke the old setup.
@@ -381,74 +391,30 @@ $BRIDGE_EXTRA
 PLIST
 }
 
-write_sync_plist() {
-  cat > "$1" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>$SYNC_LABEL</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>$(xml "$NODE")</string>
-    <string>$(xml "$APP/src/agent-sync.js")</string>
-    <string>--watch</string>
-  </array>
-  <key>WorkingDirectory</key>
-  <string>$(xml "$STATE")</string>
-  <key>EnvironmentVariables</key>
-  <dict>
-    <key>PATH</key>
-    <string>/usr/bin:/bin:/usr/sbin:/sbin</string>
-    <key>PET_AGENT_SYNC_PREFIX</key>
-    <string>$(xml "$PREFIX")</string>
-    <key>PET_BRIDGE_URL</key>
-    <string>$(xml "http://127.0.0.1:$PORT/events")</string>
-    <key>PET_BRIDGE_TOKEN_FILE</key>
-    <string>$(xml "$TOKEN_FILE")</string>
-$SYNC_EXTRA
-  </dict>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>ThrottleInterval</key>
-  <integer>10</integer>
-  <key>StandardOutPath</key>
-  <string>$(xml "$LOG_DIR/agent-sync.stdout.log")</string>
-  <key>StandardErrorPath</key>
-  <string>$(xml "$LOG_DIR/agent-sync.stderr.log")</string>
-</dict>
-</plist>
-PLIST
-}
-
 step "4. LaunchAgents"
 if [[ "$DO_LAUNCHD" == 0 ]]; then
   item "skipped (--skip-launchd)"
 else
-  item "$BRIDGE_LABEL: node $APP/src/bridge-server.js, listening on $HOST_BIND:$PORT, token from the file"
-  item "$SYNC_LABEL: node $APP/src/agent-sync.js --watch, source prefix \"$PREFIX\""
+  item "$BRIDGE_LABEL: node $APP/src/bridge-server.js (with embedded agent-sync), listening on $HOST_BIND:$PORT, token from the file"
+  [[ -f "$SYNC_PLIST" ]] && item "$SYNC_LABEL: retire standalone LaunchAgent (now embedded in bridge-server)"
   item "host from $(origin_of PET_BRIDGE_HOST "$OLD_HOST"), port from $(origin_of PET_BRIDGE_PORT "$OLD_PORT"), prefix from $(origin_of PET_AGENT_SYNC_PREFIX "$OLD_PREFIX")"
   [[ -n "$BRIDGE_EXTRA" ]] && item "bridge keeps its other settings: $(extra_env_names "$BRIDGE_EXTRA")"
-  [[ -n "$SYNC_EXTRA" ]] && item "agent-sync keeps its other settings: $(extra_env_names "$SYNC_EXTRA")"
   item "logs: $LOG_DIR"
   if [[ "$APPLY" == 1 ]]; then
     mkdir -p "$AGENTS_DIR"
     backup "$BRIDGE_PLIST"
-    backup "$SYNC_PLIST"
+    if [[ -f "$SYNC_PLIST" ]]; then
+      backup "$SYNC_PLIST"
+      "$LAUNCHCTL" bootout "gui/$UID_NUM/$SYNC_LABEL" 2>/dev/null || true
+      rm -f "$SYNC_PLIST"
+    fi
     write_bridge_plist "$BRIDGE_PLIST.new"
-    write_sync_plist "$SYNC_PLIST.new"
     "$PLUTIL" -lint "$BRIDGE_PLIST.new" >/dev/null
-    "$PLUTIL" -lint "$SYNC_PLIST.new" >/dev/null
     mv "$BRIDGE_PLIST.new" "$BRIDGE_PLIST"
-    mv "$SYNC_PLIST.new" "$SYNC_PLIST"
     bootstrap_agent "$BRIDGE_LABEL" "$BRIDGE_PLIST"
-    bootstrap_agent "$SYNC_LABEL" "$SYNC_PLIST"
-    item "restarted both"
+    item "restarted $BRIDGE_LABEL"
   else
-    printf '    (dry run) rewrite %s and %s, then launchctl bootout/bootstrap both\n' "$BRIDGE_PLIST" "$SYNC_PLIST"
+    printf '    (dry run) rewrite %s, retire %s if present, and launchctl bootstrap %s\n' "$BRIDGE_PLIST" "$SYNC_PLIST" "$BRIDGE_LABEL"
   fi
 fi
 

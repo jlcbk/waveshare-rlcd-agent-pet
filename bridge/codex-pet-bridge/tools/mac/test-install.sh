@@ -167,7 +167,7 @@ printf '{"allowed": ["node %s/src/hermes-hook.js"]}\n' "$OLD" > "$FAKE_HOME/.her
 ln -s "$OLD/integrations/openclaw-pet-bridge" "$FAKE_HOME/.openclaw/extensions/openclaw-pet-bridge"
 
 run_install() {
-  HOME="$FAKE_HOME" PATH="$STUBS:$PATH" PET_INSTALL_TEST=1 LAUNCHCTL="$STUBS/launchctl" PLUTIL="$STUBS/plutil" \
+  HOME="$FAKE_HOME" PYTHONDONTWRITEBYTECODE=1 PATH="$STUBS:$PATH" PET_INSTALL_TEST=1 LAUNCHCTL="$STUBS/launchctl" PLUTIL="$STUBS/plutil" \
     "$SRC/tools/mac/install.sh" --node "$NODE_BIN" "$@"
 }
 
@@ -194,7 +194,7 @@ TOKEN_FILE="$FAKE_HOME/.codex-pet-bridge/token"
 check '[[ "$(cat "$TOKEN_FILE")" == "$TOKEN" ]]' "token file keeps the board's token"
 check '[[ "$(stat -c %a "$TOKEN_FILE" 2>/dev/null || stat -f %Lp "$TOKEN_FILE")" == 600 ]]' "token file is 0600"
 check '! grep -q "$TOKEN" "$FAKE_HOME/Library/LaunchAgents/net.vcxzvfe.codex-pet-bridge.plist"' "bridge plist no longer holds the token"
-check '! grep -q "$TOKEN" "$FAKE_HOME/Library/LaunchAgents/net.vcxzvfe.codex-pet-agent-sync.plist"' "agent-sync plist no longer holds the token"
+check '[[ ! -e "$FAKE_HOME/Library/LaunchAgents/net.vcxzvfe.codex-pet-agent-sync.plist" ]]' "standalone agent-sync plist retired (embedded in bridge)"
 check 'grep -q "$FAKE_HOME/.codex-pet-bridge/app/src/bridge-server.js" "$FAKE_HOME/Library/LaunchAgents/net.vcxzvfe.codex-pet-bridge.plist"' "bridge plist runs the installed copy"
 check 'grep -q "secret-hub-key" "$FAKE_HOME/Library/LaunchAgents/net.vcxzvfe.codex-pet-bridge.plist"' "other settings carried over"
 check '"$STUBS/plutil" -lint "$FAKE_HOME/Library/LaunchAgents/net.vcxzvfe.codex-pet-bridge.plist" >/dev/null' "new bridge plist is valid"

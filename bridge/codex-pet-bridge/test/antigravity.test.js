@@ -13,6 +13,7 @@ import {
   decodeStepMeta,
   decodeWorkspaceMeta,
   loadAntigravityRealtimeState,
+  loadAntigravityRealtimeStates,
   readConversation
 } from "../src/antigravity-db.js";
 import {
@@ -310,6 +311,89 @@ test("Antigravity DB decoding, realtime state and bridge-server integration", as
     const conv = await readConversation(dbPath);
     assert.equal(conv.workspace, "/Users/cui/Documents/Projects/RLCD_firm1");
     assert.equal(conv.generations.totals.input, 99_000 + 2500);
+
+    // Append 6 more steps to exercise incremental cursor caching and verify rewind fallback
+    const extraStepBlob = buildStepMetaBlob({
+      timestampMs: nowMs - 1_000,
+      input: 1000,
+      cacheRead: 4000,
+      thinking: 100,
+      output: 200,
+      totalOutput: 300
+    });
+    await execFileAsync("sqlite3", [
+      dbPath,
+      `
+        UPDATE steps SET status = 3 WHERE idx = 2;
+        INSERT INTO steps VALUES
+          (3, 14, 3, NULL),
+          (4, 15, 3, X'${extraStepBlob.toString("hex")}'),
+          (5, 132, 3, NULL),
+          (6, 14, 3, NULL),
+          (7, 15, 3, X'${extraStepBlob.toString("hex")}'),
+          (8, 132, 1, NULL);
+      `
+    ]);
+    await utimes(dbPath, new Date(nowMs - 1000), new Date(nowMs - 1000));
+    const convIncremental = await readConversation(dbPath);
+    assert.equal(convIncremental.steps.total, 9);
+    assert.equal(convIncremental.generations.totals.input, 99_000 + 2500 + 2000);
+
+    // Rewind back to original 3 steps to verify truncation detection
+    await execFileAsync("sqlite3", [
+      dbPath,
+      "DELETE FROM steps WHERE idx > 2; UPDATE steps SET status = 1 WHERE idx = 2;"
+    ]);
+    await utimes(dbPath, new Date(nowMs - 800), new Date(nowMs - 800));
+    const convRewound = await readConversation(dbPath);
+    assert.equal(convRewound.steps.total, 3);
+    assert.equal(convRewound.generations.totals.input, 99_000 + 2500);
+
+    // Add a second active workspace window (LLM-thinking -> higher priority than run_command!)
+    const ws2Blob = pbBytes(1, pbBytes(7, "file:///Users/cui/Documents/Projects/esp32_remote"));
+    const gen2Blob = buildGenMetaBlob({
+      input: 500,
+      cacheRead: 2000,
+      thinking: 50,
+      output: 80,
+      totalOutput: 130,
+      ctxCurrent: 12000,
+      ctxMax: 128000,
+      modelId: "claude-sonnet-4-5",
+      modelDisplay: "Claude Sonnet 4.5"
+    });
+    const active2LogDir = join(geminiDir, "antigravity", "brain", "conv-ag-2", ".system_generated", "logs");
+    await mkdir(active2LogDir, { recursive: true });
+    const active2DbPath = join(convDir, "conv-ag-2.db");
+    await execFileAsync("sqlite3", [
+      active2DbPath,
+      `
+        CREATE TABLE steps (idx integer primary key, step_type integer, status integer, metadata blob);
+        CREATE TABLE gen_metadata (idx integer primary key, data blob, size integer);
+        CREATE TABLE trajectory_metadata_blob (id text primary key, data blob);
+        INSERT INTO steps VALUES (0, 14, 3, NULL), (1, 15, 2, NULL);
+        INSERT INTO gen_metadata VALUES (0, X'${gen2Blob.toString("hex")}', ${gen2Blob.length});
+        INSERT INTO trajectory_metadata_blob VALUES ('main', X'${ws2Blob.toString("hex")}');
+      `
+    ]);
+    const active2TrPath = join(active2LogDir, "transcript.jsonl");
+    await writeFile(
+      active2TrPath,
+      JSON.stringify({ type: "USER_INPUT", status: "DONE", created_at: new Date(nowMs - 3000).toISOString() }) + "\n"
+    );
+    await utimes(active2DbPath, new Date(nowMs - 3000), new Date(nowMs - 3000));
+    await utimes(active2TrPath, new Date(nowMs - 3000), new Date(nowMs - 3000));
+
+    const multiStates = await loadAntigravityRealtimeStates({ geminiDir, sourcePrefix: "mac", now: nowMs });
+    assert.equal(multiStates.length, 2);
+    assert.equal(multiStates[0].workspace, "/Users/cui/Documents/Projects/esp32_remote");
+    assert.equal(multiStates[0].status, "thinking");
+    assert.equal(multiStates[1].workspace, "/Users/cui/Documents/Projects/RLCD_firm1");
+    assert.equal(multiStates[1].status, "tool-use");
+
+    // Remove conv-ag-2 so the single-window assertions below match conv-ag-1
+    await rm(active2DbPath, { force: true });
+    await rm(join(geminiDir, "antigravity", "brain", "conv-ag-2"), { recursive: true, force: true });
 
     // Add a second idle conversation whose .db was touched more recently (e.g. background WAL flush)
     const idleLogDir = join(geminiDir, "antigravity", "brain", "conv-ag-idle", ".system_generated", "logs");

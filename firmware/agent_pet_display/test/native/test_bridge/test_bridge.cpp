@@ -492,6 +492,23 @@ void test_antigravity_payload_maps_to_antigravity_source_and_preserves_raw(void)
   TEST_ASSERT_EQUAL_STRING("RLCD_firm1", state.agentSlots[0].project.c_str());
 }
 
+void test_cross_source_notification_never_poisons_active_agent(void) {
+  const char* json =
+      "{\"ok\":true,\"unread_count\":5,\"source\":\"mac-antigravity\",\"project\":\"RLCD_firm1\","
+      "\"task\":\"\",\"updated_at\":\"2026-10-29T10:30:00Z\",\"current_status\":\"thinking\","
+      "\"notification\":{\"id\":\"old1\",\"source\":\"mac-codex\",\"task\":\"stale codex task\","
+      "\"status\":\"completed\",\"project\":\"other-repo\",\"message\":\"Codex finished yesterday\"}}";
+  AgentState state{};
+
+  const bool ok = parseAgentStatePayload(json, state);
+
+  TEST_ASSERT_TRUE(ok);
+  TEST_ASSERT_EQUAL(static_cast<int>(SourceKind::Antigravity), static_cast<int>(state.source));
+  TEST_ASSERT_EQUAL(static_cast<int>(AgentStatus::Running), static_cast<int>(state.status));
+  TEST_ASSERT_EQUAL_STRING("RLCD_firm1", state.project.c_str());
+  TEST_ASSERT_EQUAL_STRING("", state.task.c_str());
+}
+
 int main(void) {
   UNITY_BEGIN();
   RUN_TEST(test_parse_running_codex_payload);
@@ -524,5 +541,6 @@ int main(void) {
   RUN_TEST(test_url_host_helpers_and_mdns_normalization);
   RUN_TEST(test_egg_request_is_reported_only_when_set);
   RUN_TEST(test_antigravity_payload_maps_to_antigravity_source_and_preserves_raw);
+  RUN_TEST(test_cross_source_notification_never_poisons_active_agent);
   return UNITY_END();
 }

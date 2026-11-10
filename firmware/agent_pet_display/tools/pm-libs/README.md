@@ -48,33 +48,27 @@ The resulting `out/tools/sdk/esp32s3/` contains `lib`, `include`, `ld`,
 
 First make a separate copy of the stock PlatformIO `framework-arduinoespressif32`
 2.0.17 package and overlay the rebuilt `out/tools/sdk/esp32s3/` onto the copy's
-`tools/sdk/esp32s3/`. Do not overwrite the global package. With all ordinary
-PlatformIO packages already installed, use an isolated package directory:
+`tools/sdk/esp32s3/`. Do not overwrite the global package. Place or symlink that
+copy at `~/.platformio/framework-arduinoespressif32-pm` (or export
+`RLCD_PM_FRAMEWORK_DIR` to point to it), then run the wrapper script:
 
 ```bash
 cd firmware/agent_pet_display
-export RLCD_PM_FRAMEWORK_DIR="/absolute/path/to/the/separate/pm-framework"
-export RLCD_PIO_PACKAGES="$(mktemp -d "${TMPDIR:-/tmp}/rlcd-pio-packages.XXXXXX")"
+export RLCD_PM_FRAMEWORK_DIR="/absolute/path/to/the/separate/pm-framework" # optional if at ~/.platformio/framework-arduinoespressif32-pm
 
-for package in "$HOME"/.platformio/packages/*; do
-  [ -d "$package" ] || continue
-  name="$(basename "$package")"
-  if [ "$name" = framework-arduinoespressif32 ]; then
-    ln -s "$RLCD_PM_FRAMEWORK_DIR" "$RLCD_PIO_PACKAGES/$name"
-  else
-    ln -s "$package" "$RLCD_PIO_PACKAGES/$name"
-  fi
-done
-
-PLATFORMIO_PACKAGES_DIR="$RLCD_PIO_PACKAGES" pio run -e waveshare_rlcd_pm
+./tools/pm-libs/pio-pm.sh run -e waveshare_rlcd_pm
+./tools/pm-libs/pio-pm.sh run -e waveshare_rlcd_pm -t upload --upload-port /dev/cu.usbmodemXXXX
 ```
 
-Keep `RLCD_PIO_PACKAGES` in the same shell when using the top-level upload
-command. The isolated directory links other tool packages to the existing
-PlatformIO installation; it does not contain a copy of the custom SDK. Without
-the PM SDK, the firmware can still compile but falls back to a fixed CPU clock
-without automatic light sleep. The former machine-specific global swap script
-has been removed; use the isolated package directory above instead.
+`tools/pm-libs/pio-pm.sh` verifies that `qio_qspi/include/sdkconfig.h` defines
+both `CONFIG_PM_ENABLE` and `CONFIG_FREERTOS_USE_TICKLESS_IDLE`, refreshes a
+persistent symlinked package directory at `~/.platformio/packages-pm`, and
+invokes `pio` with `PLATFORMIO_PACKAGES_DIR="$HOME/.platformio/packages-pm"`.
+
+In addition, `[env:waveshare_rlcd_pm]` sets `-D RLCD_REQUIRE_PM_SDK=1`, causing
+`src/pm_controller.cpp` to fail fast at compile time with `#error` if someone
+accidentally runs bare `pio run -e waveshare_rlcd_pm` against the stock non-PM
+SDK. Stock non-PM builds remain available explicitly via `pio run -e waveshare_rlcd`.
 
 ## Verification of the rebuilt libs
 

@@ -273,26 +273,32 @@ bool fillAgentState(const JsonDocument& doc, AgentState& outState) {
     const char* notificationProject = notification["project"].as<const char*>();
     const char* notificationTask = notification["task"].as<const char*>();
     const char* notificationUpdatedAt = notification["time"].as<const char*>();
+    // Never let an unread notification from a different agent family poison an explicit current source.
+    const bool compatibleNotification =
+        !currentSource || !currentSource[0] || !notificationSource || !notificationSource[0] ||
+        parseSourceKind(currentSource) == parseSourceKind(notificationSource);
 
-    if ((!source || !source[0]) && notificationSource && notificationSource[0]) {
-      source = notificationSource;
-    }
-    if ((!status || !status[0] || strcmp(status, "event") == 0) &&
-        notificationStatus && notificationStatus[0] && strcmp(notificationStatus, "event") != 0) {
-      status = notificationStatus;
-    }
-    if ((!project || !project[0]) && (!currentSource || !currentSource[0]) &&
-        notificationProject && notificationProject[0]) {
-      project = notificationProject;
-    }
-    if ((!task || !task[0])) {
-      task = notificationTask;
-      if (!task || !task[0]) {
-        task = notification["message"].as<const char*>();
+    if (compatibleNotification) {
+      if ((!source || !source[0]) && notificationSource && notificationSource[0]) {
+        source = notificationSource;
       }
-    }
-    if ((!updatedAt || !updatedAt[0]) && notificationUpdatedAt && notificationUpdatedAt[0]) {
-      updatedAt = notificationUpdatedAt;
+      if ((!status || !status[0] || strcmp(status, "event") == 0) &&
+          notificationStatus && notificationStatus[0] && strcmp(notificationStatus, "event") != 0) {
+        status = notificationStatus;
+      }
+      if ((!project || !project[0]) && (!currentSource || !currentSource[0]) &&
+          notificationProject && notificationProject[0]) {
+        project = notificationProject;
+      }
+      if ((!task || !task[0])) {
+        task = notificationTask;
+        if (!task || !task[0]) {
+          task = notification["message"].as<const char*>();
+        }
+      }
+      if ((!updatedAt || !updatedAt[0]) && notificationUpdatedAt && notificationUpdatedAt[0]) {
+        updatedAt = notificationUpdatedAt;
+      }
     }
   }
 

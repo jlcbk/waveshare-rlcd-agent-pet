@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import http from "node:http";
-import { appendFile, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { homedir, hostname as osHostname } from "node:os";
@@ -9,12 +9,13 @@ import { promisify } from "node:util";
 
 import { fileURLToPath } from "node:url";
 
+import { runAgentSyncTick } from "./agent-sync.js";
 import { AnimStore } from "./anim-store.js";
 import {
   DEFAULT_ANTIGRAVITY_GEMINI_DIR,
   antigravityTokensToday,
   fetchAntigravityQuota,
-  loadAntigravityRealtimeState,
+  loadAntigravityRealtimeStates,
   readSnapshot as readAntigravitySnapshot
 } from "./antigravity-db.js";
 import {
@@ -91,6 +92,12 @@ const ANTIGRAVITY_QUOTA_INTERVAL_MS = nonNegativeNumberFromEnv(
   "PET_BRIDGE_ANTIGRAVITY_QUOTA_INTERVAL_MS",
   process.env.PET_BRIDGE_CLAUDE_PROJECTS ? 0 : 10 * 60_000
 );
+const EMBEDDED_SYNC_INTERVAL_MS = nonNegativeNumberFromEnv(
+  "PET_BRIDGE_SYNC_INTERVAL_MS",
+  process.env.PET_BRIDGE_CLAUDE_PROJECTS || process.env.PET_BRIDGE_EMBEDDED_SYNC === "0" ? 0 : 15_000
+);
+const MAX_LOG_BYTES = numberFromEnv("PET_BRIDGE_MAX_LOG_BYTES", 2 * 1024 * 1024);
+const NOTIFICATION_TTL_MS = numberFromEnv("PET_BRIDGE_NOTIFICATION_TTL_MS", 30 * 60_000);
 const MAX_DEVICE_SLOTS = numberFromEnv("PET_BRIDGE_MAX_DEVICE_SLOTS", 6);
 const SLOT_MAX_AGE_MS = numberFromEnv("PET_BRIDGE_SLOT_MAX_AGE_MS", 12 * 60 * 60 * 1000);
 const EGG_DELAY_MS = numberFromEnv("PET_BRIDGE_EGG_DELAY_MS", 3500);
@@ -107,6 +114,7 @@ const deliveryState = {
   lastSuccessAt: ""
 };
 let flushPromise = null;
+let embeddedSyncPromise = null;
 let persistPromise = Promise.resolve();
 let usageCache = {
   loadedAt: 0,
@@ -116,6 +124,7 @@ let claudeCache = { loadedAt: 0, realtime: null, today: 0, todayLoadedAt: 0 };
 let antigravityCache = {
   loadedAt: 0,
   realtime: null,
+  realtimes: [],
   realtimePromise: null,
   today: 0,
   todayLoadedAt: 0,
@@ -433,6 +442,49 @@ if (ANTIGRAVITY_REALTIME_ENABLED && ANTIGRAVITY_QUOTA_INTERVAL_MS > 0) {
   }, ANTIGRAVITY_QUOTA_INTERVAL_MS).unref();
 }
 
+if (EMBEDDED_SYNC_INTERVAL_MS > 0) {
+  void runEmbeddedSync();
+  setInterval(() => {
+    void runEmbeddedSync();
+  }, EMBEDDED_SYNC_INTERVAL_MS).unref();
+}
+
+async function runEmbeddedSync() {
+  if (embeddedSyncPromise) return embeddedSyncPromise;
+  const syncStatePath = resolve(
+    process.env.PET_AGENT_SYNC_STATE || join(dirname(STATE_PATH), "agent-sync-state.json")
+  );
+  embeddedSyncPromise = (async () => {
+    const latestCodexEvent =
+      [...recentEvents].reverse().find((item) => sourceFamily(item.source) === "codex") || null;
+    const latestAntigravityEvent =
+      [...recentEvents].reverse().find((item) => sourceFamily(item.source) === "antigravity") || null;
+    const [codexRt, claudeRt, agRealtimes] = await Promise.all([
+      loadCodexRealtimeState(latestCodexEvent).catch(() => null),
+      loadClaudeRealtimeCached().catch(() => null),
+      loadAntigravityRealtimesCached(latestAntigravityEvent).catch(() => [])
+    ]);
+    await runAgentSyncTick({
+      statePath: syncStatePath,
+      sourcePrefix: CODEX_SOURCE_PREFIX,
+      codexSessionsDir: CODEX_SESSIONS_ROOT,
+      claudeProjectsDir: CLAUDE_PROJECTS_DIR,
+      antigravityGeminiDir: ANTIGRAVITY_GEMINI_DIR,
+      codexRealtime: codexRt || undefined,
+      claudeRealtime: claudeRt,
+      antigravityRealtime: agRealtimes[0] || null,
+      emitEvent: async (raw) => {
+        await publishEvent(normalizeEvent(raw));
+      }
+    });
+  })()
+    .catch(() => {})
+    .finally(() => {
+      embeddedSyncPromise = null;
+    });
+  return embeddedSyncPromise;
+}
+
 function normalizeEvent(input = {}) {
   const now = new Date().toISOString();
   const raw = typeof input === "object" && input !== null ? input : { value: input };
@@ -505,15 +557,54 @@ function summarize(raw) {
   return "Agent event received";
 }
 
+async function appendEventLog(event) {
+  await mkdir(dirname(LOG_PATH), { recursive: true });
+  try {
+    const info = await stat(LOG_PATH);
+    if (info.size >= MAX_LOG_BYTES) {
+      await rename(LOG_PATH, `${LOG_PATH}.1`).catch(() => {});
+    }
+  } catch {
+    // Log file does not exist yet.
+  }
+  await appendFile(LOG_PATH, `${JSON.stringify(event)}\n`, "utf8");
+}
+
+function notificationTargetIdentity(item) {
+  if (!item) return "";
+  if (item.sessionId) return `session:${item.sessionId}`;
+  if (item.workspace) return `workspace:${item.workspace}`;
+  if (item.task && !isGenericSessionTask(item.task)) return `task:${item.task}`;
+  return "";
+}
+
+function supersedeSameTargetNotifications(event) {
+  const activeTurn = new Set(["running", "working", "thinking", "searching", "tool-use", "started", "progress"]);
+  if (!activeTurn.has(event.status)) return;
+  const family = sourceFamily(event.source);
+  const target = notificationTargetIdentity(event);
+  const nowIso = new Date().toISOString();
+  for (const n of recentNotifications) {
+    if (n.read) continue;
+    if (sourceFamily(n.source) !== family) continue;
+    const nTarget = notificationTargetIdentity(n);
+    // Match exact session/workspace/task, or clear completed generic sync notifications of the same family.
+    if ((target && nTarget === target) || (!nTarget && n.status === "completed")) {
+      n.read = true;
+      n.readAt = nowIso;
+    }
+  }
+}
+
 async function publishEvent(event) {
   recentEvents.push(event);
   while (recentEvents.length > MAX_EVENTS) recentEvents.shift();
 
-  await mkdir(dirname(LOG_PATH), { recursive: true });
-  await appendFile(LOG_PATH, `${JSON.stringify(event)}\n`, "utf8");
+  await appendEventLog(event);
 
   broadcastSse(event);
 
+  supersedeSameTargetNotifications(event);
   const notification = createNotification(event);
   if (notification) {
     recentNotifications.unshift(notification);
@@ -612,8 +703,18 @@ function priorityForStatus(status) {
   return 1;
 }
 
-function unreadNotifications() {
-  return recentNotifications.filter((notification) => !notification.read);
+function unreadNotifications(now = Date.now()) {
+  const nowIso = new Date(now).toISOString();
+  return recentNotifications.filter((notification) => {
+    if (notification.read) return false;
+    const createdMs = Date.parse(notification.time || "");
+    if (Number.isFinite(createdMs) && now - createdMs > NOTIFICATION_TTL_MS) {
+      notification.read = true;
+      notification.readAt = nowIso;
+      return false;
+    }
+    return true;
+  });
 }
 
 async function ackNotification(id) {
@@ -672,11 +773,29 @@ async function agentView(options = {}) {
 
 const FINE_ACTIVE_STATUSES = new Set(["thinking", "tool-use", "searching", "needs-attention", "working"]);
 
+function findMatchingRealtime(item, realtimes = []) {
+  if (!item || !realtimes.length) return null;
+  const family = sourceFamily(item.source);
+  const sameFamily = realtimes.filter((candidate) => sourceFamily(candidate?.source) === family);
+  if (!sameFamily.length) return null;
+  if (item.sessionId) {
+    const bySession = sameFamily.find((candidate) => candidate.sessionId === item.sessionId);
+    if (bySession) return bySession;
+  }
+  if (item.workspace) {
+    const byWorkspace = sameFamily.find((candidate) => candidate.workspace === item.workspace);
+    if (byWorkspace) return byWorkspace;
+  }
+  if (!item.sessionId && !item.workspace) {
+    return sameFamily[0];
+  }
+  return null;
+}
+
 function enrichWithRealtime(item, realtimes, slots = []) {
   if (!item) return null;
-  const family = sourceFamily(item.source);
-  const rt = realtimes.find((candidate) => sourceFamily(candidate?.source) === family) || null;
-  const slot = slots.find((candidate) => sourceFamily(candidate?.source) === family) || null;
+  const rt = findMatchingRealtime(item, realtimes);
+  const slot = findMatchingRealtime(item, slots);
   const enriched = {
     ...item,
     workspace: item.workspace || rt?.workspace || slot?.workspace || "",
@@ -702,8 +821,9 @@ async function buildAgentView(options = {}) {
     [...recentEvents].reverse().find((item) => sourceFamily(item.source) === "antigravity") || null;
   const codexRealtime = await loadCodexRealtimeState(latestCodexEvent);
   const claudeRealtime = await loadClaudeRealtimeCached();
-  const antigravityRealtime = await loadAntigravityRealtimeCached(latestAntigravityEvent);
-  const realtimes = [codexRealtime, claudeRealtime, antigravityRealtime].filter(Boolean);
+  const antigravityRealtimes = await loadAntigravityRealtimesCached(latestAntigravityEvent);
+  const antigravityRealtime = antigravityRealtimes[0] || null;
+  const realtimes = [codexRealtime, claudeRealtime, ...antigravityRealtimes].filter(Boolean);
   const rawVisibleSlots = pruneAndCapSlots(buildVisibleAgentSlots(recentEvents, realtimes), {
     maxSlots: MAX_DEVICE_SLOTS,
     maxAgeMs: SLOT_MAX_AGE_MS
@@ -716,8 +836,20 @@ async function buildAgentView(options = {}) {
     autoCurrent: slotStateFromCurrent(autoCurrent)
   });
   const current = enrichWithRealtime(materializeCurrentState(selected, autoCurrent), realtimes, visibleSlots);
-  const usage = await loadUsageSummary(current, claudeRealtime, antigravityRealtime);
-  return { selected, current, visibleSlots, usage, codexRealtime, claudeRealtime, antigravityRealtime };
+  const selectedAntigravityRt =
+    (current && sourceFamily(current.source) === "antigravity"
+      ? findMatchingRealtime(current, antigravityRealtimes)
+      : null) || antigravityRealtime;
+  const usage = await loadUsageSummary(current, claudeRealtime, selectedAntigravityRt);
+  return {
+    selected,
+    current,
+    visibleSlots,
+    usage,
+    codexRealtime,
+    claudeRealtime,
+    antigravityRealtime: selectedAntigravityRt
+  };
 }
 
 function resolveDeviceProject(item) {
@@ -890,38 +1022,49 @@ async function refreshAntigravityQuota() {
   return antigravityCache.quotaPromise;
 }
 
-async function loadAntigravityRealtimeCached(latestAntigravityEvent = null) {
-  if (!ANTIGRAVITY_REALTIME_ENABLED) return null;
+async function loadAntigravityRealtimesCached(latestAntigravityEvent = null) {
+  if (!ANTIGRAVITY_REALTIME_ENABLED) return [];
   if (Date.now() - antigravityCache.loadedAt < 1500 && antigravityCache.loadedAt > 0) {
-    return alignAntigravityRealtimeIdentity(antigravityCache.realtime, latestAntigravityEvent);
+    return antigravityCache.realtimes.map((rt) =>
+      alignAntigravityRealtimeIdentity(rt, latestAntigravityEvent)
+    );
   }
   if (!antigravityCache.realtimePromise) {
-    antigravityCache.realtimePromise = loadAntigravityRealtimeState({
+    antigravityCache.realtimePromise = loadAntigravityRealtimeStates({
       geminiDir: ANTIGRAVITY_GEMINI_DIR,
       sourcePrefix: CODEX_SOURCE_PREFIX,
       hookEvent: antigravityCache.hookEvent,
-      hookAt: antigravityCache.hookAt
+      hookAt: antigravityCache.hookAt,
+      ignoreConversationId: antigravityCache.internalConversationId
     })
-      .catch(() => null)
-      .then((realtime) => {
-        antigravityCache.realtime = realtime;
+      .catch(() => [])
+      .then((realtimes) => {
+        antigravityCache.realtimes = realtimes;
+        antigravityCache.realtime = realtimes[0] || null;
         antigravityCache.loadedAt = Date.now();
-        return realtime;
+        return realtimes;
       })
       .finally(() => {
         antigravityCache.realtimePromise = null;
       });
   }
-  const realtime = await antigravityCache.realtimePromise;
-  return alignAntigravityRealtimeIdentity(realtime, latestAntigravityEvent);
+  const realtimes = await antigravityCache.realtimePromise;
+  return realtimes.map((rt) => alignAntigravityRealtimeIdentity(rt, latestAntigravityEvent));
 }
 
 function alignAntigravityRealtimeIdentity(realtime, latestEvent) {
   if (!realtime) return null;
+  const eventTask =
+    latestEvent &&
+    !isGenericSessionTask(latestEvent.task) &&
+    ((latestEvent.sessionId && latestEvent.sessionId === realtime.sessionId) ||
+      (latestEvent.workspace && latestEvent.workspace === realtime.workspace))
+      ? latestEvent.task
+      : "";
   return {
     ...realtime,
     source: latestEvent?.source || realtime.source,
-    task: latestEvent?.task || slugFromPath(realtime.workspace) || realtime.task
+    task: eventTask || slugFromPath(realtime.workspace) || realtime.task
   };
 }
 
